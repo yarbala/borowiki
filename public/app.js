@@ -179,16 +179,19 @@ const spotsGeoJson = () =>
     properties: { id: sp.id, ago: sp.agoHours },
   })));
 
-/** Осадки: каждая ячейка сетки — квадрат, цвет по миллиметрам. */
+/**
+ * Осадки: квадрат на каждую ячейку сетки. Цвет — по самому сильному дождю за окно,
+ * а не по сумме: так его можно сравнивать с грозой, которая тоже событие.
+ */
 function rainGeoJson() {
   const { stepDeg = 0.2, cells = [] } = state.data.rain || {};
   const h = stepDeg / 2;
-  return fc(cells.map(([lat, lon, mm]) => ({
+  return fc(cells.map(([lat, lon, mm, ago = 0, total = mm]) => ({
     type: 'Feature',
     geometry: { type: 'Polygon', coordinates: [[
       [lon - h, lat - h], [lon + h, lat - h], [lon + h, lat + h], [lon - h, lat + h], [lon - h, lat - h],
     ]] },
-    properties: { mm },
+    properties: { mm, ago, total },
   })));
 }
 
@@ -252,7 +255,7 @@ function initMap() {
       source: 'rain',
       layout: { visibility: state.rain ? 'visible' : 'none' },
       paint: {
-        'fill-color': ['interpolate', ['linear'], ['get', 'mm'], 0, '#DCE9F7', 15, '#8FA9DA', 30, '#3E6FBF', 50, '#1B3E80'],
+        'fill-color': ['interpolate', ['linear'], ['get', 'mm'], 0, '#E4EEF8', 8, '#9FB8DF', 18, '#4E7CC4', 30, '#1B3E80'],
         'fill-opacity': 0.45,
         'fill-antialias': false,
       },
@@ -344,6 +347,19 @@ function initMap() {
         'circle-stroke-width': 2.5,
       },
     }, before);
+
+    // По ячейке осадков — всплывающая подсказка: сколько и когда.
+    map.on('click', 'rain', (e) => {
+      if (state.picking) return;
+      const p = e.features?.[0]?.properties;
+      if (!p) return;
+      clickedFeature = true;
+      const when = p.ago === 0 ? 'сегодня' : p.ago === 1 ? 'вчера' : `${p.ago} ${plural(p.ago, ['день', 'дня', 'дней'])} назад`;
+      new maplibregl.Popup({ closeButton: false, offset: 6 })
+        .setLngLat(e.lngLat)
+        .setHTML(`<b>${p.mm} мм</b> · ${when}<br><span class="popup-sub">за неделю ${p.total} мм</span>`)
+        .addTo(map);
+    });
 
     for (const layer of ['spot-halo', 'spot-bolt', 'storm-forests']) {
       map.on('click', layer, (e) => {

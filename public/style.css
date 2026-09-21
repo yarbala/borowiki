@@ -502,6 +502,17 @@ input[type=range] { accent-color: var(--accent); }
 .actions .mark:hover { background: var(--surface); }
 .actions .mark[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
+.maplibregl-popup-content {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 8px 11px;
+  box-shadow: var(--shadow);
+}
+
+.popup-sub { color: var(--muted); font-size: 12px; }
+
 .notice {
   font-size: 13px;
   color: var(--ink-2);
