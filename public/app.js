@@ -106,12 +106,15 @@ function boltSvg(size) {
 
 let map, footLayer, pinLayer, strikeLayer, homeLayer, outlineLayer;
 const foots = {}, pins = {};
+const forestShapes = [];
 
 function initMap() {
   map = L.map('map', { zoomControl: false, attributionControl: false });
   L.tileLayer(TILES.url, TILES.opts).addTo(map);
+  // Лес — под пятнами, разряды — над ними: они попадают в те же места,
+  // и снизу их было бы не видно.
+  map.createPane('forest').style.zIndex = 405;
   map.createPane('spots').style.zIndex = 410;
-  // Разряды кладём над пятнами: они попадают в те же места, и снизу их было бы не видно.
   map.createPane('strikes').style.zIndex = 415;
 
   outlineLayer = L.layerGroup().addTo(map);
@@ -155,10 +158,37 @@ function spotStyle(sp) {
   };
 }
 
+/** Цвет и прозрачность залитого леса. Лес без оценки — приглушённый зелёный. */
+function forestStyle(f) {
+  const score = f.scores ? f.scores[hIndex()] : null;
+  return {
+    pane: 'forest',
+    stroke: false,
+    fill: true,
+    // Без обводки: тайлы режут большой лес на куски, и швы между ними были бы видны.
+    fillColor: score == null ? '#4C7A4C' : rampColor(score),
+    fillOpacity: state.stale ? 0.2 : score == null ? 0.3 : 0.55,
+  };
+}
+
+function drawForests() {
+  outlineLayer.clearLayers();
+  forestShapes.length = 0;
+  for (const f of state.data.forests || []) {
+    const poly = L.polygon(f.ring.map(([lon, lat]) => [lat, lon]), forestStyle(f));
+    if (f.spotId) poly.on('click', (e) => {
+      L.DomEvent.stopPropagation(e);
+      if (state.picking) setHome(e.latlng.lat, e.latlng.lng);
+      else selectSpot(f.spotId);
+    });
+    poly.addTo(outlineLayer);
+    forestShapes.push({ f, poly });
+  }
+}
+
 function drawSpots() {
   footLayer.clearLayers();
   pinLayer.clearLayers();
-  outlineLayer.clearLayers();
   for (const k of Object.keys(foots)) delete foots[k];
   for (const k of Object.keys(pins)) delete pins[k];
 
@@ -170,15 +200,6 @@ function drawSpots() {
       else selectSpot(sp.id);
     };
 
-    if (sp.outline?.length) {
-      L.polygon(sp.outline.map(([lon, lat]) => [lat, lon]), {
-        pane: 'spots', interactive: false, stroke: true, color: '#2E6B2E', weight: 1, opacity: 0.35, fill: false,
-      }).addTo(outlineLayer);
-    }
-
-    foots[sp.id] = L.circle([sp.lat, sp.lon], { radius: sp.radiusM, pane: 'spots', bubblingMouseEvents: false, ...st.foot })
-      .on('click', onClick)
-      .addTo(footLayer);
     pins[sp.id] = L.circleMarker([sp.lat, sp.lon], { pane: 'spots', bubblingMouseEvents: false, ...st.pin })
       .on('click', onClick)
       .addTo(pinLayer);
@@ -203,6 +224,7 @@ function drawSpots() {
 }
 
 function restyle() {
+  for (const { f, poly } of forestShapes) poly.setStyle(forestStyle(f));
   for (const sp of state.data.spots) {
     const st = spotStyle(sp);
     foots[sp.id]?.setStyle(st.foot);
@@ -653,6 +675,7 @@ async function boot() {
   $('homeLabel').value = state.home.label;
 
   initMap();
+  drawForests();
   drawSpots();
   drawHome();
   fitHome();

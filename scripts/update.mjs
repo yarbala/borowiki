@@ -83,8 +83,8 @@ async function main() {
   log(`проходов грозы над ячейками: ${passes.length}`);
 
   // 3. Пересечение с лесами OSM
-  const spots = passes.length ? await buildSpots(passes, (m) => log(' ', m)) : [];
-  log(`пятен «гроза над лесом»: ${spots.length}`);
+  const { spots, forests } = passes.length ? await buildSpots(passes, (m) => log(' ', m)) : { spots: [], forests: [] };
+  log(`пятен «гроза над лесом»: ${spots.length}, лесных контуров под грозой: ${forests.length}`);
 
   // 4. Погода и оценка
   const today = local(now.getTime()).date;
@@ -110,7 +110,7 @@ async function main() {
       lat: sp.lat,
       lon: sp.lon,
       radiusM: sp.radiusM,
-      outline: sp.outline,
+      forestId: sp.forestId,
       stormId: `st${sp.stormIndex}`,
       startUtc: new Date(sp.startMs).toISOString(),
       endUtc: new Date(sp.endMs).toISOString(),
@@ -127,6 +127,28 @@ async function main() {
   }
 
   ready.sort((a, b) => b.scores[0] - a.scores[0]);
+
+  // Каждому лесному контуру — оценка пятна, которое в нём лежит: на карте закрашивается
+  // сам лес, а не круг поверх него. Если своего пятна нет, берём ближайшее той же грозы.
+  const byForestId = new Map();
+  for (const r of ready) {
+    const cur = byForestId.get(r.forestId);
+    if (!cur || r.scores[0] > cur.scores[0]) byForestId.set(r.forestId, r);
+  }
+  for (const f of forests) {
+    let best = byForestId.get(f.id);
+    if (!best) {
+      const [lon, lat] = f.ring[0];
+      let bestKm = Infinity;
+      for (const r of ready) {
+        const km = Math.hypot((r.lat - lat) * 110.6, (r.lon - lon) * 111.3 * Math.cos((lat * Math.PI) / 180));
+        if (km < bestKm) { bestKm = km; best = r; }
+      }
+      if (bestKm > 8) best = null;
+    }
+    f.scores = best ? best.scores : null;
+    f.spotId = best ? best.id : null;
+  }
 
   // 5. Слой разрядов: где молнии были вообще, включая поля
   const strikes = passes
@@ -147,6 +169,7 @@ async function main() {
     demo: demo !== null,
     demoLabel: demo !== null ? `${local(from.getTime()).dayLabel} – ${local(now.getTime()).dayLabel}` : null,
     home: { lat: HOME.lat, lon: HOME.lon, label: HOME.label },
+    forests,
     spots: ready,
     strikes,
     stats: {
