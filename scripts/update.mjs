@@ -210,6 +210,14 @@ async function main() {
     },
   };
 
+  // Защита от затирания рабочих данных: если пятна были, а после погоды не осталось
+  // ни одного (например, исчерпан лимит Open-Meteo), прежний файл лучше не трогать.
+  if (spots.length && !ready.length) {
+    log('ни одно пятно не получило погоду — прежний файл оставляем без изменений');
+    process.exitCode = 1;
+    return;
+  }
+
   await fs.mkdir(path.dirname(OUT), { recursive: true });
   await fs.writeFile(OUT, JSON.stringify(payload));
   const size = (await fs.stat(OUT)).size;
