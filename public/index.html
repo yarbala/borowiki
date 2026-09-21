@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Гроза над лесом — где искать грибы</title>
+<title>Гроза над лесом</title>
 <meta name="theme-color" content="#EDEAE3">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpolygon points='12.5,1.5 4,11.5 9.5,11.5 7.5,18.5 16,8.5 10.5,8.5' fill='%236B4EE6'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,18 +21,17 @@
   <div class="top">
     <div></div>
     <div class="top-center">
-      <div class="pill" id="horizons" role="group" aria-label="Горизонт прогноза"></div>
-      <div class="hint" id="horizonHint"></div>
+
 
       <div class="pick-bar" id="pickBar" hidden>
         Нажмите на карту — здесь будет дом
         <button type="button" id="cancelPick">Отмена</button>
       </div>
 
-      <div class="legend" id="legend">
-        <span><i style="background:#F5C518"></i>скоро</span>
-        <span><i style="background:#F5821F"></i>можно идти</span>
-        <span><i style="background:#E5321F"></i>пик</span>
+      <div class="legend" id="legend" title="Сколько дней прошло после грозы">
+        <span><i style="background:#F5C518"></i>0–1 день</span>
+        <span class="go"><i style="background:#E5321F"></i>2–4 дня — ехать</span>
+        <span><i style="background:#9A9891"></i>5–7 дней</span>
       </div>
     </div>
     <button type="button" class="icon-btn" id="settingsBtn" title="Настройки: дом и радиус" aria-label="Настройки">
@@ -43,7 +42,7 @@
   <!-- Низ: кнопки и выдвижная панель -->
   <div class="bottom">
     <div class="fabs">
-      <button type="button" class="icon-btn" id="stormBtn" title="Разряды молний за 7 дней" aria-pressed="false">
+      <button type="button" class="icon-btn" id="strikesBtn" title="Все разряды молний за 7 дней, включая поля" aria-pressed="false">
         <svg width="20" height="20"><polygon points="12.5,1.5 4,11.5 9.5,11.5 7.5,18.5 16,8.5 10.5,8.5" fill="currentColor"></polygon></svg>
       </button>
       <button type="button" class="icon-btn" id="locateBtn" title="Моё местоположение">
@@ -56,7 +55,7 @@
 
       <button type="button" class="sheet-handle" id="sheetHandle" aria-expanded="false">
         <span class="sheet-handle-text">
-          <span class="t" id="topTitle">Топ мест рядом</span>
+          <span class="t" id="topTitle">Гроза над лесом</span>
           <span class="s" id="topSub"></span>
         </span>
         <span class="chev" id="chev"></span>

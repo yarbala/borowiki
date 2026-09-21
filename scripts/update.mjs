@@ -44,16 +44,6 @@ const plural = (n, f) => {
   return m10 === 1 && m100 !== 11 ? f[0] : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? f[1] : f[2];
 };
 
-function peakText(peakDate, today) {
-  const d = new Date(peakDate + 'T12:00:00Z');
-  const from = new Date(d); from.setUTCDate(from.getUTCDate() - 2);
-  const to = new Date(d); to.setUTCDate(to.getUTCDate() + 2);
-  const range = from.getUTCMonth() === to.getUTCMonth()
-    ? `${from.getUTCDate()}–${to.getUTCDate()} ${MONTHS[to.getUTCMonth()]}`
-    : `${from.getUTCDate()} ${MONTHS[from.getUTCMonth()]} – ${to.getUTCDate()} ${MONTHS[to.getUTCMonth()]}`;
-  if (peakDate === today) return `Пик сейчас — ${range}`;
-  return peakDate > today ? `Пик ожидается ${range}` : `Пик прошёл ${range}`;
-}
 
 async function main() {
   const demo = arg('demo');
@@ -111,29 +101,32 @@ async function main() {
       lon: sp.lon,
       radiusM: sp.radiusM,
       forestId: sp.forestId,
+      acc: sp.acc,
       stormId: `st${sp.stormIndex}`,
       startUtc: new Date(sp.startMs).toISOString(),
       endUtc: new Date(sp.endMs).toISOString(),
       dayLabel: when.dayLabel,
       time: when.time === local(sp.endMs).time ? when.time : `${when.time}–${local(sp.endMs).time}`,
       agoDays: a.daysSince,
-      scores: a.scores,
-      peak: peakText(a.peakDate, today),
+      agoText: a.daysSince === 0 ? 'сегодня' : `${a.daysSince} ${plural(a.daysSince, ['день', 'дня', 'дней'])} назад`,
       strikesText: `${sp.areaKm2} км² · сила ${sp.peak} из 6`,
-      rainText: `${a.stormMm} мм в грозу · ${a.daysSince} ${plural(a.daysSince, ['день', 'дня', 'дней'])} назад`,
+      rainMm: a.stormMm,
+      rainText: `${a.stormMm} мм`,
+      sinceRainText: a.sinceStormMm > 0 ? `${a.sinceStormMm} мм` : 'сухо',
       tempText: a.tempRange ? `днём ${a.tempRange[0]}–${a.tempRange[1]} °C` : '—',
       chart: a.chart,
     });
   }
 
-  ready.sort((a, b) => b.scores[0] - a.scores[0]);
+  // Самые свежие грозы наверх: по ним и планируется поездка.
+  ready.sort((a, b) => a.agoDays - b.agoDays || b.acc - a.acc);
 
-  // Каждому лесному контуру — оценка пятна, которое в нём лежит: на карте закрашивается
-  // сам лес, а не круг поверх него. Если своего пятна нет, берём ближайшее той же грозы.
+  // Каждому лесному контуру — давность грозы, которая по нему прошла: карта красит лес
+  // по свежести. Если своего пятна нет, берём ближайшее той же грозы.
   const byForestId = new Map();
   for (const r of ready) {
     const cur = byForestId.get(r.forestId);
-    if (!cur || r.scores[0] > cur.scores[0]) byForestId.set(r.forestId, r);
+    if (!cur || r.agoDays < cur.agoDays) byForestId.set(r.forestId, r);
   }
   for (const f of forests) {
     let best = byForestId.get(f.id);
@@ -146,7 +139,7 @@ async function main() {
       }
       if (bestKm > 8) best = null;
     }
-    f.scores = best ? best.scores : null;
+    f.agoDays = best ? best.agoDays : null;
     f.spotId = best ? best.id : null;
   }
 
