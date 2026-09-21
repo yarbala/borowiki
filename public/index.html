@@ -19,7 +19,9 @@
 
   <!-- Верх: переключатель горизонта, легенда, настройки -->
   <div class="top">
-    <div></div>
+    <button type="button" class="icon-btn" id="historyBtn" title="Посмотреть состояние на прошлую дату" aria-label="История">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4.5" width="14" height="12.5" rx="2.5"/><line x1="3" y1="8" x2="17" y2="8"/><line x1="7" y1="2.5" x2="7" y2="5"/><line x1="13" y1="2.5" x2="13" y2="5"/></svg>
+    </button>
     <div class="top-center">
 
 
@@ -28,10 +30,10 @@
         <button type="button" id="cancelPick">Отмена</button>
       </div>
 
-      <div class="legend" id="legend" title="Сколько дней прошло после грозы">
-        <span><i style="background:#F5C518"></i>0–1 день</span>
-        <span class="go"><i style="background:#E5321F"></i>2–4 дня — ехать</span>
-        <span><i style="background:#9A9891"></i>5–7 дней</span>
+      <div class="legend" id="legend" title="Чем свежее гроза, тем краснее метка">
+        <span class="ramp-label">только что</span>
+        <span class="ramp"></span>
+        <span class="ramp-label">7 дней</span>
       </div>
     </div>
     <button type="button" class="icon-btn" id="settingsBtn" title="Настройки: дом и радиус" aria-label="Настройки">
@@ -42,6 +44,9 @@
   <!-- Низ: кнопки и выдвижная панель -->
   <div class="bottom">
     <div class="fabs">
+      <button type="button" class="icon-btn" id="rainBtn" title="Осадки за 7 дней по всему региону" aria-pressed="false">
+        <svg width="20" height="20" viewBox="0 0 20 20"><path d="M10 2.5C10 2.5 4.5 9 4.5 12.3a5.5 5.5 0 0 0 11 0C15.5 9 10 2.5 10 2.5z" fill="currentColor"/></svg>
+      </button>
       <button type="button" class="icon-btn" id="strikesBtn" title="Все разряды молний за 7 дней, включая поля" aria-pressed="false">
         <svg width="20" height="20"><polygon points="12.5,1.5 4,11.5 9.5,11.5 7.5,18.5 16,8.5 10.5,8.5" fill="currentColor"></polygon></svg>
       </button>
@@ -69,6 +74,32 @@
         <span class="status" id="status"><i></i><span id="statusText">загрузка…</span></span>
         <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" id="credit">© OpenStreetMap</a>
       </div>
+    </div>
+  </div>
+
+  <!-- История -->
+  <div class="modal" id="history" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-label="История">
+      <div class="modal-head">
+        <span class="modal-title">История</span>
+        <button type="button" class="close-btn" id="closeHistory" title="Закрыть" aria-label="Закрыть">×</button>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Состояние на дату</span>
+        <div class="search-row">
+          <input type="date" id="historyDate">
+          <button type="button" class="linkbtn" id="showHistory">Показать</button>
+        </div>
+        <div class="note" id="historyNote"></div>
+      </div>
+
+      <div class="field" id="historyListBox" hidden>
+        <span class="field-label">Уже собрано</span>
+        <div class="chips" id="historyList"></div>
+      </div>
+
+      <button type="button" class="primary" id="backToToday">Вернуться к сегодня</button>
     </div>
   </div>
 

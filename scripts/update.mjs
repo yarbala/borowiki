@@ -3,16 +3,17 @@
 // Запуск:
 //   node scripts/update.mjs                 последние 7 суток
 //   node scripts/update.mjs --demo          неделя с сильными грозами (для проверки интерфейса)
-//   node scripts/update.mjs --demo=2026-06-21 --days=7
+//   node scripts/update.mjs --date=2026-09-07   состояние на тот день (в public/data/history/)
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { DATA_RADIUS_KM, DAYS, HOME, TZ } from '../lib/config.mjs';
+import { BBOX, DATA_RADIUS_KM, DAYS, HOME, TZ } from '../lib/config.mjs';
 import { loadFrames, pruneFrames } from '../lib/lightning.mjs';
 import { buildPasses } from '../lib/storms.mjs';
 import { buildSpots } from '../lib/spots.mjs';
-import { analyse, fetchDaily, snap } from '../lib/weather.mjs';
+import { analyse, fetchDaily, fetchRainGrid, snap } from '../lib/weather.mjs';
 
-const OUT = path.join(process.cwd(), 'public', 'data', 'spots.json');
+const DATA_DIR = path.join(process.cwd(), 'public', 'data');
+const HISTORY_DIR = path.join(DATA_DIR, 'history');
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 
@@ -39,6 +40,15 @@ function local(ms) {
   };
 }
 
+/** «40 минут назад», «5 часов назад», «3 дня назад» — по свежести важен именно час. */
+function agoText(ms) {
+  const h = Math.max(0, Math.round(ms / 3600_000));
+  if (h < 1) return `${Math.max(1, Math.round(ms / 60_000))} ${plural(Math.round(ms / 60_000), ['минуту', 'минуты', 'минут'])} назад`;
+  if (h < 36) return `${h} ${plural(h, ['час', 'часа', 'часов'])} назад`;
+  const d = Math.round(h / 24);
+  return `${d} ${plural(d, ['день', 'дня', 'дней'])} назад`;
+}
+
 const plural = (n, f) => {
   const m10 = n % 10, m100 = n % 100;
   return m10 === 1 && m100 !== 11 ? f[0] : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? f[1] : f[2];
@@ -47,14 +57,21 @@ const plural = (n, f) => {
 
 async function main() {
   const demo = arg('demo');
+  const asOf = arg('date');
   const days = +(arg('days') || DAYS);
 
   // Демо-неделя по умолчанию: 27 августа – 3 сентября 2026, четыре грозовых дня над регионом.
   // Она же укладывается в 31 день истории Open-Meteo, поэтому у пятен есть осадки и оценки.
-  const now = demo === null ? new Date() : new Date(`${demo || '2026-09-03'}T21:55:00Z`);
+  // Режим истории: «сейчас» — это конец выбранного дня.
+  const now = asOf
+    ? new Date(`${asOf}T21:55:00Z`)
+    : demo === null
+      ? new Date()
+      : new Date(`${demo || '2026-09-03'}T21:55:00Z`);
+  const OUT = asOf ? path.join(HISTORY_DIR, `${asOf}.json`) : path.join(DATA_DIR, 'spots.json');
   const from = new Date(now.getTime() - days * 86400_000);
 
-  log(demo === null ? `режим: последние ${days} суток` : `режим: демо-неделя по ${now.toISOString().slice(0, 10)}`);
+  log(asOf ? `режим: история на ${asOf}` : demo === null ? `режим: последние ${days} суток` : `режим: демо-неделя по ${now.toISOString().slice(0, 10)}`);
   log(`окно: ${from.toISOString()} .. ${now.toISOString()}`);
 
   // 1. Молнии
@@ -108,7 +125,8 @@ async function main() {
       dayLabel: when.dayLabel,
       time: when.time === local(sp.endMs).time ? when.time : `${when.time}–${local(sp.endMs).time}`,
       agoDays: a.daysSince,
-      agoText: a.daysSince === 0 ? 'сегодня' : `${a.daysSince} ${plural(a.daysSince, ['день', 'дня', 'дней'])} назад`,
+      agoHours: Math.max(0, Math.round((now.getTime() - sp.endMs) / 3600_000)),
+      agoText: agoText(now.getTime() - sp.endMs),
       strikesText: `${sp.areaKm2} км² · сила ${sp.peak} из 6`,
       rainMm: a.stormMm,
       rainText: `${a.stormMm} мм`,
@@ -119,14 +137,14 @@ async function main() {
   }
 
   // Самые свежие грозы наверх: по ним и планируется поездка.
-  ready.sort((a, b) => a.agoDays - b.agoDays || b.acc - a.acc);
+  ready.sort((a, b) => a.agoHours - b.agoHours || b.acc - a.acc);
 
   // Каждому лесному контуру — давность грозы, которая по нему прошла: карта красит лес
   // по свежести. Если своего пятна нет, берём ближайшее той же грозы.
   const byForestId = new Map();
   for (const r of ready) {
     const cur = byForestId.get(r.forestId);
-    if (!cur || r.agoDays < cur.agoDays) byForestId.set(r.forestId, r);
+    if (!cur || r.agoHours < cur.agoHours) byForestId.set(r.forestId, r);
   }
   for (const f of forests) {
     let best = byForestId.get(f.id);
@@ -140,10 +158,11 @@ async function main() {
       if (bestKm > 8) best = null;
     }
     f.agoDays = best ? best.agoDays : null;
+    f.agoHours = best ? best.agoHours : null;
     f.spotId = best ? best.id : null;
   }
 
-  // 5. Слой разрядов: где молнии были вообще, включая поля
+  // 6. Слой разрядов: где молнии были вообще, включая поля
   const strikes = passes
     .slice()
     .sort((a, b) => b.acc - a.acc)
@@ -151,8 +170,17 @@ async function main() {
     .map((p) => [
       +p.lat.toFixed(3),
       +p.lon.toFixed(3),
-      Math.max(0, Math.round((now.getTime() - p.endMs) / 86400_000)),
+      Math.max(0, Math.round((now.getTime() - p.endMs) / 3600_000)),
     ]);
+
+  // 5. Осадки по всему региону — контроль: где дождь был, а молний нет.
+  let rain = { stepDeg: 0.2, cells: [] };
+  try {
+    rain = await fetchRainGrid(BBOX, { from, to: now });
+    log(`сетка осадков: ${rain.cells.length} ячеек с дождём`);
+  } catch (e) {
+    log(`осадки по региону не собрались: ${e.message}`);
+  }
 
   const payload = {
     generatedAt: new Date().toISOString(),
@@ -160,12 +188,14 @@ async function main() {
     windowFrom: from.toISOString(),
     windowDays: days,
     demo: demo !== null,
+    asOf: asOf || null,
     demoLabel: demo !== null ? `${local(from.getTime()).dayLabel} – ${local(now.getTime()).dayLabel}` : null,
     home: { lat: HOME.lat, lon: HOME.lon, label: HOME.label },
     dataRadiusKm: DATA_RADIUS_KM,
     forests,
     spots: ready,
     strikes,
+    rain,
     stats: {
       frames: frames.length,
       passes: passes.length,
@@ -179,7 +209,8 @@ async function main() {
   const size = (await fs.stat(OUT)).size;
   log(`записано ${OUT} (${Math.round(size / 1024)} КБ), пятен: ${ready.length}`);
 
-  if (demo === null) {
+  // Кадры чистим только в обычном режиме: историческим они как раз нужны.
+  if (demo === null && !asOf) {
     const removed = await pruneFrames(new Date(Date.now() - (days + 2) * 86400_000));
     if (removed) log(`удалено старых файлов кадров: ${removed}`);
   }

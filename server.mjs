@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 const ROOT = process.cwd();
 const PUBLIC = path.join(ROOT, 'public');
 const FINDS = path.join(ROOT, 'data', 'finds.json');
+const HISTORY = path.join(PUBLIC, 'data', 'history');
 const PORT = +(process.env.PORT || 8080);
 
 /** Как часто проверять, не пора ли обновить данные. */
@@ -44,19 +45,37 @@ async function writeFinds(data) {
 
 let updating = false;
 
-function runUpdate(reason) {
-  if (updating) return;
+/** Дата, которую сейчас собираем для режима истории, либо null. */
+let buildingDate = null;
+
+function runUpdate(reason, args = []) {
+  if (updating) return false;
   updating = true;
   console.log(`[update] старт (${reason})`);
-  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs')], { stdio: 'inherit' });
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], { stdio: 'inherit' });
   child.on('exit', (code) => {
     updating = false;
+    buildingDate = null;
     console.log(`[update] завершено с кодом ${code}`);
   });
   child.on('error', (e) => {
     updating = false;
+    buildingDate = null;
     console.error('[update] не запустилось:', e.message);
   });
+  return true;
+}
+
+async function historyDates() {
+  try {
+    return (await fs.readdir(HISTORY))
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
+      .map((f) => f.slice(0, 10))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
 }
 
 async function dataAgeMs() {
@@ -87,7 +106,8 @@ async function serveStatic(req, res, urlPath) {
     const body = await fs.readFile(file);
     res.writeHead(200, {
       'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      'cache-control': file.endsWith('.json') ? 'no-store' : 'no-cache',
+      // Локальное приложение: кэшируем только тяжёлый слой лесов, он не меняется.
+      'cache-control': file.endsWith('forests.json') ? 'public, max-age=86400' : 'no-store',
     });
     res.end(body);
   } catch {
@@ -118,6 +138,42 @@ const server = http.createServer(async (req, res) => {
           else finds[id] = { kind, ...rest };
           await writeFinds(finds);
           res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, { 'content-type': MIME['.json'] }).end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  if (pathname === '/api/history') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': MIME['.json'] })
+        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate }));
+      return;
+    }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', async () => {
+        try {
+          const { date } = JSON.parse(body || '{}');
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('нужна дата вида ГГГГ-ММ-ДД');
+          const dates = await historyDates();
+          if (dates.includes(date)) {
+            res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ ready: true }));
+            return;
+          }
+          if (buildingDate) {
+            res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ building: buildingDate }));
+            return;
+          }
+          buildingDate = date;
+          if (!runUpdate(`история на ${date}`, [`--date=${date}`])) {
+            buildingDate = null;
+            throw new Error('сейчас идёт другое обновление, попробуйте через минуту');
+          }
+          res.writeHead(202, { 'content-type': MIME['.json'] }).end(JSON.stringify({ building: date }));
         } catch (e) {
           res.writeHead(400, { 'content-type': MIME['.json'] }).end(JSON.stringify({ error: e.message }));
         }
