@@ -36,13 +36,15 @@
         <button type="button" id="cancelPick">Отмена</button>
       </div>
 
+      <div class="hint" id="hint" hidden></div>
+
+      <!-- Шкалы подписаны: две одинаковые полоски без подписи ничего не объясняли -->
       <div class="legend" id="legend" title="Чем свежее событие, тем насыщеннее метка">
-        <span class="ramp-label">только что</span>
         <span class="ramps">
-          <span class="ramp storm"></span>
-          <span class="ramp rain" id="rainRamp" hidden></span>
+          <span class="ramp-row"><span class="ramp storm"></span><span class="ramp-name">гроза</span></span>
+          <span class="ramp-row" id="rainRamp" hidden><span class="ramp rain"></span><span class="ramp-name">дождь</span></span>
+          <span class="ramp-scale"><span>только что</span><span>7 дней</span></span>
         </span>
-        <span class="ramp-label">7 дней</span>
       </div>
     </div>
     <button type="button" class="icon-btn" id="settingsBtn" title="Настройки: дом и радиус" aria-label="Настройки">
@@ -53,7 +55,7 @@
   <!-- Низ: кнопки и выдвижная панель -->
   <div class="bottom">
     <div class="fabs">
-      <button type="button" class="icon-btn" id="rainBtn" title="Самый сильный дождь за окно — по всему региону, включая места без молний" aria-pressed="false">
+      <button type="button" class="icon-btn" id="rainBtn" title="Сильный дождь над лесом — контроль к грозам" aria-pressed="false">
         <svg width="20" height="20" viewBox="0 0 20 20"><path d="M10 2.5C10 2.5 4.5 9 4.5 12.3a5.5 5.5 0 0 0 11 0C15.5 9 10 2.5 10 2.5z" fill="currentColor"/></svg>
       </button>
       <button type="button" class="icon-btn" id="strikesBtn" title="Все разряды молний за 7 дней, включая поля" aria-pressed="false">

@@ -5,6 +5,8 @@
 // правило владельца («через 2–4 дня после грозы») отражено в цветах и подписях.
 
 const STORE_KEY = 'borowiki.v1';
+/** Раньше этого дня спутник молний не видел (то же значение в lib/config.mjs). */
+const LIGHTNING_START = '2025-05-30';
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 
@@ -78,6 +80,12 @@ const state = {
   historyBusy: null,
   // Дата, которую сервер сейчас собирает по нашему запросу.
   building: null,
+  // Таймер ожидания сборки — его нужно уметь остановить, иначе он позже
+  // выдернет карту в снимок, который человек уже закрыл.
+  buildPoll: null,
+  // {date, text} — сборка не удалась; без этого плашка просто исчезала.
+  buildError: null,
+  lastRun: null,
 };
 
 function persist() {
@@ -104,10 +112,47 @@ function distKm(home, lat, lon) {
 /** Название уже может содержать деревню («Лес у Pokój») — тогда не повторяем её. */
 const placePrefix = (sp) => (sp.place && !sp.forest.includes(sp.place) ? `у ${sp.place} · ` : '');
 
+/**
+ * Ключ отметки «Нашёл / Пусто» — место и день грозы.
+ *
+ * Раньше ключом был номер пятна (s1, s2…), а номера выдаются заново при каждой
+ * сборке: отметка переезжала на чужой лес за сотню километров, а в режиме истории
+ * показывалась на местах, где человек не был. Место и дата грозы не меняются.
+ */
+const markKey = (sp) => `${sp.lat.toFixed(3)},${sp.lon.toFixed(3)}@${(sp.startUtc || '').slice(0, 10)}`;
+
+/** Давность грозы в часах; у старых данных её может не быть. */
+const agoH = (sp) => sp.agoHours ?? 168;
+
+/** Дата в местном виде ГГГГ-ММ-ДД — для полей ввода и сравнений. */
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/**
+ * Самая ранняя дата, на которую можно собрать снимок. Ограничение не в молниях
+ * (они есть с мая 2025), а в погоде: Open-Meteo отдаёт около 92 последних дней,
+ * из которых 30 уходят на график до даты снимка.
+ */
+function earliestDate() {
+  const d = new Date();
+  d.setDate(d.getDate() - (92 - 30));
+  const iso = isoDay(d);
+  return iso > LIGHTNING_START ? iso : LIGHTNING_START;
+}
+
 /** Полная подпись даты — для строки состояния и панели истории. */
 const dateLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 /** Короткая — для плашки вверху, где мало места. */
 const dateShort = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+
+/** Короткое сообщение поверх карты: на телефоне подсказки-title не существует. */
+let hintTimer = null;
+function showHint(text) {
+  const box = $('hint');
+  box.textContent = text;
+  box.hidden = false;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { box.hidden = true; }, 6000);
+}
 
 const el = (tag, props = {}, ...kids) => {
   const n = Object.assign(document.createElement(tag), props);
@@ -175,6 +220,17 @@ const drawDrop = (g, k) => {
   g.closePath();
 };
 
+/**
+ * Когда был этот дождь. В режиме истории «сегодня» и «вчера» считались от даты
+ * снимка — и дождь двухнедельной давности подписывался как сегодняшний. Теперь
+ * показываем сам день, а относительные слова добавляем только к живым данным.
+ */
+function rainWhen(p) {
+  const rel = p.ago === 0 ? 'сегодня' : p.ago === 1 ? 'вчера' : `${p.ago} ${plural(p.ago, ['день', 'дня', 'дней'])} назад`;
+  if (p.day) return state.asOf ? dateShort(p.day) : `${dateShort(p.day)} · ${rel}`;
+  return state.asOf ? `за ${p.ago} ${plural(p.ago, ['день', 'дня', 'дней'])} до снимка` : rel;
+}
+
 function circlePolygon(lat, lon, km, points = 128) {
   const ring = [];
   const dLat = km / 110.574;
@@ -199,34 +255,53 @@ const spotsGeoJson = () =>
   fc(state.data.spots.map((sp) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: [sp.lon, sp.lat] },
-    properties: { id: sp.id, ago: sp.agoHours },
+    properties: { id: sp.id, ago: agoH(sp) },
   })));
 
 /**
- * Сильные дожди над лесом — каплями, как грозы молниями: цвет по свежести,
- * размер по миллиметрам. Слабый дождь не показываем вовсе.
+ * Что со слоем осадков в текущем снимке. Три разных случая, которые раньше
+ * выглядели одинаково: слой не собирался, служба погоды отказала, сильных
+ * дождей просто не было.
  */
-/** В старых снимках у ячейки не было времени дождя — такой слой не показываем. */
-const rainHasTime = () => (state.data.rain?.cells || []).every((c) => c.length >= 4);
-
-function rainGeoJson() {
-  const { cells = [] } = state.data.rain || {};
-  if (!rainHasTime()) return fc([]);
-  return fc(cells
-    .filter(([, , mm]) => mm >= RAIN_MIN_MM)
-    .map(([lat, lon, mm, ago = 0, total = mm]) => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [lon, lat] },
-      properties: { mm, ago, total, agoH: ago * 24 },
-    })));
+function rainInfo() {
+  const d = state.data || {};
+  if (!d.rain) {
+    return { ok: false, reason: d.rainError ? `Осадки не собрались: ${d.rainError}` : 'Для этого снимка осадки не собирались' };
+  }
+  const minMm = d.rain.minMm ?? RAIN_MIN_MM;
+  const all = d.rain.cells || [];
+  // В самых первых снимках у ячейки не было ни времени дождя, ни даты.
+  if (all.some((c) => c.length < 4)) return { ok: false, reason: 'Снимок собран старой версией — пересоберите его' };
+  const cells = all.filter((c) => c[2] >= minMm);
+  if (!cells.length) return { ok: false, reason: `Дождей от ${minMm} мм за сутки над лесом в это окно не было` };
+  return { ok: true, cells, minMm };
 }
 
-const strikesGeoJson = () =>
-  fc((state.data.strikes || []).map(([lat, lon, ago]) => ({
+/**
+ * Сильные дожди над лесом — каплями, как грозы молниями: цвет по свежести,
+ * размер одинаковый (важно место, а не количество).
+ */
+function rainGeoJson() {
+  const info = rainInfo();
+  if (!info.ok) return fc([]);
+  return fc(info.cells.map(([lat, lon, mm, ago = 0, total = mm, day = null]) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: [lon, lat] },
-    properties: { ago },
+    properties: { mm, ago, total, day, agoH: ago * 24 },
   })));
+}
+
+const strikesGeoJson = () => {
+  const strikes = state.data.strikes || [];
+  // Когда-то давность разряда была в сутках, теперь в часах. В файлах без номера
+  // версии определяем по самим числам: за окно в неделю сутки не превышают 7.
+  const hours = (state.data.version || 0) >= 2 || strikes.some(([, , a]) => a > 7);
+  return fc(strikes.map(([lat, lon, ago]) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [lon, lat] },
+    properties: { ago: (ago ?? 168) * (hours ? 1 : 24) },
+  })));
+};
 
 function homeGeoJson() {
   const f = [{ type: 'Feature', geometry: { type: 'Point', coordinates: [state.home.lon, state.home.lat] }, properties: { kind: 'home' } }];
@@ -395,10 +470,9 @@ function initMap() {
       const p = e.features?.[0]?.properties;
       if (!p) return;
       clickedFeature = true;
-      const when = p.ago === 0 ? 'сегодня' : p.ago === 1 ? 'вчера' : `${p.ago} ${plural(p.ago, ['день', 'дня', 'дней'])} назад`;
       new maplibregl.Popup({ closeButton: false, offset: 6 })
         .setLngLat(e.lngLat)
-        .setHTML(`<b>${p.mm} мм</b> · ${when}<br><span class="popup-sub">за окно ${p.total} мм</span>`)
+        .setHTML(`<b>${p.mm} мм</b> · ${rainWhen(p)}<br><span class="popup-sub">за окно ${p.total} мм</span>`)
         .addTo(map);
     });
 
@@ -437,6 +511,18 @@ function drawSpots() {
   map.getSource('storm-forests').setData(forestsGeoJson());
   map.getSource('strikes').setData(strikesGeoJson());
   map.getSource('rain').setData(rainGeoJson());
+  syncLayers();
+}
+
+/**
+ * Видимость слоёв задавалась только в обработчиках кнопок. При переходе на снимок
+ * без осадков капли оставались на экране, хотя кнопка уже была недоступна.
+ */
+function syncLayers() {
+  if (!mapReady) return;
+  const showRain = state.rain && rainInfo().ok;
+  for (const l of ['rain', 'rain-drop']) map.setLayoutProperty(l, 'visibility', showRain ? 'visible' : 'none');
+  map.setLayoutProperty('strikes', 'visibility', state.strikes ? 'visible' : 'none');
 }
 
 function drawHome() {
@@ -499,6 +585,7 @@ async function mark(kind) {
   const sp = current();
   if (!sp) return;
   const now = new Date();
+  const key = markKey(sp);
   const entry = {
     kind,
     date: `${now.getDate()} ${MONTHS[now.getMonth()]}`,
@@ -510,14 +597,14 @@ async function mark(kind) {
     stormUtc: sp.startUtc,
     daysAfterStorm: Math.round((now - new Date(sp.startUtc)) / 86400e3),
   };
-  state.marks = { ...state.marks, [sp.id]: entry };
+  state.marks = { ...state.marks, [key]: entry };
   persist();
   render();
   try {
     await fetch('/api/finds', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: sp.id, ...entry }),
+      body: JSON.stringify({ id: key, ...entry }),
     });
   } catch {}
 }
@@ -525,13 +612,14 @@ async function mark(kind) {
 async function unmark() {
   const sp = current();
   if (!sp) return;
+  const key = markKey(sp);
   const marks = { ...state.marks };
-  delete marks[sp.id];
+  delete marks[key];
   state.marks = marks;
   persist();
   render();
   try {
-    await fetch('/api/finds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: sp.id, kind: null }) });
+    await fetch('/api/finds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: key, kind: null }) });
   } catch {}
 }
 
@@ -541,7 +629,7 @@ function visibleSpots() {
   return state.data.spots
     .map((sp) => ({ sp, dist: distKm(state.home, sp.lat, sp.lon) }))
     .filter((x) => x.dist <= state.radius + 0.5)
-    .sort((a, b) => a.sp.agoHours - b.sp.agoHours || a.dist - b.dist);
+    .sort((a, b) => agoH(a.sp) - agoH(b.sp) || a.dist - b.dist);
 }
 
 function renderHandle(inRadius) {
@@ -574,7 +662,7 @@ function renderList(top) {
   }
 
   for (const x of top) {
-    const color = ageColor(x.sp.agoHours);
+    const color = ageColor(agoH(x.sp));
     const b = el('button', { type: 'button', className: 'list-item' });
     b.append(
       el('span', { className: 'bolt' }, boltSvg(13, color)),
@@ -642,9 +730,9 @@ function renderCard() {
   const sp = current();
   if (!sp) return;
 
-  const color = ageColor(sp.agoHours);
+  const color = ageColor(agoH(sp));
   const dist = Math.round(distKm(state.home, sp.lat, sp.lon));
-  const mk = state.marks[sp.id];
+  const mk = state.marks[markKey(sp)];
 
   const nav = el('div', { className: 'card-nav' });
   const back = el('button', { type: 'button', className: 'backbtn' }, el('i', {}), 'Все места');
@@ -666,6 +754,9 @@ function renderCard() {
       el('span', { className: 'when-date', textContent: `${sp.dayLabel}, ${sp.time}` }),
       el('span', { className: 'when-ago', style: `color:${color}`, textContent: sp.agoText })),
   );
+
+  // Правило владельца, а не расчёт приложения: когда ехать, решает он сам.
+  const rule = el('div', { className: 'rule', textContent: 'Ваше правило: быть на месте через 2–4 дня после грозы' });
 
   const fact = (k, v) => el('div', {}, el('span', { className: 'k', textContent: k }), el('span', { className: 'v', textContent: v }));
   const facts = el('div', { className: 'facts' },
@@ -689,7 +780,7 @@ function renderCard() {
   bEmpty.onclick = () => mark('empty');
   actions.append(bFound, bEmpty);
 
-  box.append(nav, head, when, facts);
+  box.append(nav, head, when, rule, facts);
 
   // Сбор грибов в национальных парках и резерватах запрещён — предупреждаем до выезда.
   if (sp.protectedArea) {
@@ -750,13 +841,19 @@ function render() {
 
   // Какая дата на экране — видно постоянно, а не только в строке состояния внизу.
   const badge = $('dateBadge');
+  badge.classList.remove('building', 'failed');
+  badge.removeAttribute('title');
   if (state.building) {
     badge.hidden = false;
     badge.classList.add('building');
     $('dateBadgeText').textContent = `Собираем ${dateShort(state.building)}…`;
+  } else if (state.buildError) {
+    badge.hidden = false;
+    badge.classList.add('failed');
+    badge.title = state.buildError.text;
+    $('dateBadgeText').textContent = `${dateShort(state.buildError.date)}: не собрался`;
   } else if (state.asOf) {
     badge.hidden = false;
-    badge.classList.remove('building');
     $('dateBadgeText').textContent = dateShort(state.asOf);
   } else {
     badge.hidden = true;
@@ -769,13 +866,15 @@ function render() {
   $('legend').hidden = state.picking;
   $('settings').hidden = !state.settingsOpen;
   $('strikesBtn').setAttribute('aria-pressed', String(state.strikes));
-  const rainOk = rainHasTime() && (state.data.rain?.cells || []).length > 0;
-  $('rainBtn').disabled = !rainOk;
-  $('rainBtn').title = rainOk
-    ? 'Сильные дожди над лесом за окно'
-    : 'Для этого снимка осадки не собраны — пересоберите его';
-  $('rainBtn').setAttribute('aria-pressed', String(state.rain && rainOk));
-  $('rainRamp').hidden = !(state.rain && rainOk);
+  // Кнопку не отключаем: на телефоне у недоступной кнопки не прочитать подсказку,
+  // и «почему нет капель» оставалось загадкой. Теперь нажатие объясняет причину.
+  const rain = rainInfo();
+  $('rainBtn').title = rain.ok
+    ? `Сильные дожди над лесом: ${rain.cells.length} ${plural(rain.cells.length, ['место', 'места', 'мест'])} от ${rain.minMm} мм за сутки`
+    : rain.reason;
+  $('rainBtn').classList.toggle('muted', !rain.ok);
+  $('rainBtn').setAttribute('aria-pressed', String(state.rain && rain.ok));
+  $('rainRamp').hidden = !(state.rain && rain.ok);
   $('homeCoords').textContent = `${state.home.lat.toFixed(4)}, ${state.home.lon.toFixed(4)}`;
   $('radiusLabel').textContent = `${$('radius').value} км`;
 
@@ -849,29 +948,37 @@ function wire() {
   $('sheetHandle').onclick = () => setSheet(state.sheet === 'list' ? 'collapsed' : 'list', null);
 
   $('rainBtn').onclick = () => {
+    const rain = rainInfo();
+    if (!rain.ok) { showHint(rain.reason); return; }
     state.rain = !state.rain;
-    if (mapReady) for (const l of ['rain', 'rain-drop']) map.setLayoutProperty(l, 'visibility', state.rain ? 'visible' : 'none');
+    syncLayers();
     render();
   };
 
   $('strikesBtn').onclick = () => {
     state.strikes = !state.strikes;
-    if (mapReady) map.setLayoutProperty('strikes', 'visibility', state.strikes ? 'visible' : 'none');
+    syncLayers();
     render();
   };
 
   $('dateBadgeClose').onclick = async () => {
+    stopWatch();
+    state.buildError = null;
     try {
       await loadDataset(null);
       render();
       fitHome();
-    } catch {}
+    } catch {
+      render();
+    }
   };
 
   $('historyBtn').onclick = () => {
     state.historyOpen = true;
     state.settingsOpen = false;
-    $('historyNote').textContent = 'Молнии есть с 30 мая 2025. Дождь и температура — примерно за 75 последних дней.';
+    $('historyNote').textContent = state.buildError
+      ? state.buildError.text
+      : `Снимок собирается из молний и погоды. Погоду Open-Meteo отдаёт примерно за три месяца, поэтому доступны даты с ${dateLabel(earliestDate())}.`;
     refreshHistoryList();
     render();
   };
@@ -889,16 +996,15 @@ function wire() {
         body: JSON.stringify({ date }),
       });
       const j = await r.json();
+      // Сервер отвечает ошибкой и когда дата не годится, и когда он занят
+      // обычным обновлением — раньше во втором случае браузер обещал сборку,
+      // которая не начиналась.
       if (j.error) { note.textContent = j.error; return; }
       if (j.ready) {
         await loadDataset(date);
         state.historyOpen = false;
         render();
         fitHome();
-        return;
-      }
-      if (j.building && j.building !== date) {
-        note.textContent = `Сейчас собирается ${dateLabel(j.building)} — дождитесь окончания.`;
         return;
       }
       state.historyOpen = false;
@@ -910,14 +1016,16 @@ function wire() {
   };
 
   $('backToToday').onclick = async () => {
+    stopWatch();
+    state.buildError = null;
     try {
-      state.building = null;
       await loadDataset(null);
       state.historyOpen = false;
       render();
       fitHome();
     } catch (e) {
       $('historyNote').textContent = e.message;
+      render();
     }
   };
 
@@ -959,33 +1067,47 @@ async function loadDataset(date) {
   state.asOf = date || null;
   state.selectedId = null;
   state.sheet = 'collapsed';
+  // Карточка прежнего снимка остаётся в скрытой панели — чистим, чтобы в ней
+  // не лежало место из другого набора данных.
+  $('card').textContent = '';
   state.stale = !state.asOf && !state.data.demo && (Date.now() - new Date(state.data.generatedAt).getTime()) / 3600e3 > 3;
   drawSpots();
   render();
 }
 
+/** Прекращает ждать сборку: иначе таймер позже сам откроет уже ненужный снимок. */
+function stopWatch() {
+  if (state.buildPoll) clearInterval(state.buildPoll);
+  state.buildPoll = null;
+  state.building = null;
+}
+
 /** Ждёт готовности снимка и открывает его. Работает и после перезагрузки страницы. */
 function watchBuild(date) {
+  if (state.buildPoll && state.building === date) return; // эту дату уже ждём
+  stopWatch();
   state.building = date;
+  state.buildError = null;
   render();
-  const poll = setInterval(async () => {
+  state.buildPoll = setInterval(async () => {
     await refreshHistoryList();
     if (state.historyDates.includes(date)) {
-      clearInterval(poll);
-      state.building = null;
+      stopWatch();
       try {
         await loadDataset(date);
         render();
         fitHome();
       } catch (e) {
-        state.building = null;
-        $('historyNote').textContent = e.message;
+        state.buildError = { date, text: e.message };
         render();
       }
     } else if (!state.historyBusy) {
-      // Сборка оборвалась — снимаем плашку, чтобы она не висела вечно.
-      clearInterval(poll);
-      state.building = null;
+      // Сборка кончилась, а файла нет — значит, она не удалась. Раньше плашка
+      // просто исчезала, и это выглядело в точности как успешная сборка.
+      stopWatch();
+      const fail = state.lastRun && state.lastRun.date === date && state.lastRun.error;
+      state.buildError = { date, text: fail || `Снимок на ${dateLabel(date)} собрать не удалось.` };
+      if (state.historyOpen) $('historyNote').textContent = state.buildError.text;
       render();
     }
   }, 15000);
@@ -997,6 +1119,7 @@ async function refreshHistoryList() {
     const j = await r.json();
     state.historyDates = j.dates || [];
     state.historyBusy = j.building || null;
+    state.lastRun = j.lastRun || null;
   } catch {}
   renderHistory();
 }
@@ -1039,8 +1162,10 @@ async function boot() {
   if (!state.home) state.home = { ...state.data.home };
   state.stale = !state.data.demo && (Date.now() - new Date(state.data.generatedAt).getTime()) / 3600e3 > 3;
 
+  // Без force-cache: сервер отдаёт файл с проверкой свежести, и обновлённый после
+  // `npm run region` слой лесов теперь подхватывается, а не берётся из кэша навсегда.
   try {
-    const res = await fetch('./data/forests.json', { cache: 'force-cache' });
+    const res = await fetch('./data/forests.json');
     if (res.ok) state.allForests = await res.json();
   } catch {}
 
@@ -1049,8 +1174,18 @@ async function boot() {
     if (finds && typeof finds === 'object') state.marks = { ...finds, ...state.marks };
   } catch {}
 
+  // Отметки старого формата (ключ «s7») указывали на номер пятна, а он меняется
+  // при каждой сборке. Такой ключ ничего не значит — убираем, чтобы не врал.
+  const legacy = Object.keys(state.marks).filter((k) => /^s\d+$/.test(k));
+  if (legacy.length) {
+    for (const k of legacy) delete state.marks[k];
+    persist();
+  }
+
   $('radius').value = state.radius;
   $('homeLabel').value = state.home.label;
+  $('historyDate').min = earliestDate();
+  $('historyDate').max = isoDay(new Date());
 
   initMap();
   wire();
@@ -1062,6 +1197,7 @@ async function boot() {
     const j = await r.json();
     state.historyDates = j.dates || [];
     state.historyBusy = j.building || null;
+    state.lastRun = j.lastRun || null;
     if (j.building) watchBuild(j.building);
   } catch {}
 

@@ -109,18 +109,21 @@ input[type=range] { accent-color: var(--accent); }
 
 .legend span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .legend .ramps { display: flex; flex-direction: column; gap: 3px; }
+.legend .ramp-row { gap: 6px; }
 
 .legend .ramp {
   width: 96px;
   height: 8px;
   border-radius: 4px;
+  flex: none;
 }
 
 .legend .ramp.storm { background: linear-gradient(90deg, #E5321F 0%, #F03E1C 7%, #F5821F 21%, #F5C518 50%, #B9B6AD 100%); }
 .legend .ramp.rain { background: linear-gradient(90deg, #0E3C8C 0%, #1B4FA8 7%, #3E79C9 21%, #8FB4E0 50%, #CBD9EA 100%); }
 
+.legend .ramp-name { font-size: 11px; color: var(--ink-2); }
+.legend .ramp-scale { width: 96px; justify-content: space-between; font-size: 10.5px; color: var(--muted); }
 .legend .ramp-label { font-size: 11.5px; color: var(--muted); }
-.legend i { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1.5px #FFF, 0 0 0 2.5px rgba(0, 0, 0, .12); }
 
 .hint {
   padding: 5px 12px;
@@ -184,6 +187,7 @@ input[type=range] { accent-color: var(--accent); }
 
 .date-badge button:hover { background: rgba(255, 255, 255, .32); }
 .date-badge.building { background: var(--accent); }
+.date-badge.failed { background: var(--danger); }
 
 .pick-bar {
   display: flex;
@@ -381,7 +385,6 @@ input[type=range] { accent-color: var(--accent); }
 .list-item .sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .list-item .ago { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
 .list-item .ago b { font-size: 14px; font-weight: 600; white-space: nowrap; }
-.list-item .ago .band { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .list-item .dist { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
 
 .empty-note { padding: 14px 10px 10px; color: var(--muted); font-size: 13px; }
@@ -431,14 +434,8 @@ input[type=range] { accent-color: var(--accent); }
 .card-place { font-size: 13px; color: var(--muted); margin-top: 2px; }
 .card-coords { font-size: 12.5px; color: var(--faint); margin-top: 4px; font-variant-numeric: tabular-nums; }
 
-.score-block { display: flex; flex-direction: column; gap: 8px; }
-.score-row { display: flex; align-items: baseline; gap: 10px; }
-.score-row .big { font-size: 44px; font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.score-row .status { font-size: 15px; font-weight: 600; }
-.score-row .horizon { margin-left: auto; font-size: 12.5px; color: var(--muted); }
-.score-bar { height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
-.score-bar div { height: 100%; border-radius: 2px; transition: width .3s; }
-.peak { font-size: 15px; font-weight: 500; }
+/* Правило владельца — «ехать через 2–4 дня». Это его собственное правило, не расчёт. */
+.rule { font-size: 12px; color: var(--muted); margin-top: -4px; }
 
 .when {
   display: flex;

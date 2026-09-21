@@ -6,12 +6,13 @@
 //   node scripts/update.mjs --date=2026-09-07   состояние на тот день (в public/data/history/)
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { BBOX, DATA_RADIUS_KM, DAYS, HOME, TZ } from '../lib/config.mjs';
+import { BBOX, DATA_RADIUS_KM, DAYS, HOME, LIGHTNING_START, TZ, isCalendarDate } from '../lib/config.mjs';
 import { loadFrames, pruneFrames } from '../lib/lightning.mjs';
 import { buildPasses } from '../lib/storms.mjs';
 import { buildSpots } from '../lib/spots.mjs';
-import { analyse, fetchDaily, fetchRainGrid, snap } from '../lib/weather.mjs';
+import { MAX_PAST_DAYS, analyse, earliestWeatherDate, fetchDaily, fetchRainGrid, localDate, snap, weatherWindow } from '../lib/weather.mjs';
 import { loadForestMask } from '../lib/forestmask.mjs';
+import { agoText } from '../lib/format.mjs';
 
 const DATA_DIR = path.join(process.cwd(), 'public', 'data');
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
@@ -41,25 +42,54 @@ function local(ms) {
   };
 }
 
-/** «40 минут назад», «5 часов назад», «3 дня назад» — по свежести важен именно час. */
-function agoText(ms) {
-  const h = Math.max(0, Math.round(ms / 3600_000));
-  if (h < 1) return `${Math.max(1, Math.round(ms / 60_000))} ${plural(Math.round(ms / 60_000), ['минуту', 'минуты', 'минут'])} назад`;
-  if (h < 36) return `${h} ${plural(h, ['час', 'часа', 'часов'])} назад`;
-  const d = Math.round(h / 24);
-  return `${d} ${plural(d, ['день', 'дня', 'дней'])} назад`;
+/** Запись через временный файл: упавший запуск не может испортить рабочие данные. */
+async function writeAtomic(file, text) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, text);
+  await fs.rename(tmp, file);
 }
 
-const plural = (n, f) => {
-  const m10 = n % 10, m100 = n % 100;
-  return m10 === 1 && m100 !== 11 ? f[0] : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? f[1] : f[2];
-};
+/**
+ * До какого дня кадры молний можно удалять. Живому окну хватает недели, но снимкам
+ * истории нужны их собственные недели — иначе первое же обычное обновление стирает
+ * то, что сборка снимка качала семь минут.
+ */
+async function framesCutoff(days) {
+  const shift = (date, back) => {
+    const d = new Date(`${date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - back);
+    return d.toISOString().slice(0, 10);
+  };
+  let earliest = shift(new Date().toISOString().slice(0, 10), days + 2);
+  try {
+    for (const f of await fs.readdir(HISTORY_DIR)) {
+      const m = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
+      if (!m) continue;
+      const start = shift(m[1], days + 1);
+      if (start < earliest) earliest = start;
+    }
+  } catch {}
+  return new Date(`${earliest}T00:00:00Z`);
+}
 
 
 async function main() {
   const demo = arg('demo');
   const asOf = arg('date');
   const days = +(arg('days') || DAYS);
+
+  // `--date` без значения раньше молча уходил в обычный режим и переписывал живые данные.
+  if (asOf === '') throw new Error('укажите дату: --date=ГГГГ-ММ-ДД');
+  if (asOf !== null) {
+    if (!isCalendarDate(asOf)) throw new Error(`${asOf} — не существующая дата`);
+    if (asOf < LIGHTNING_START) throw new Error(`молнии есть только с ${LIGHTNING_START}`);
+    if (asOf > localDate()) throw new Error('дата в будущем');
+    // Проверяем до загрузки кадров: иначе семь минут работы заканчивались пустотой.
+    if (!weatherWindow(asOf).ok) {
+      throw new Error(`погода есть примерно за ${MAX_PAST_DAYS} последних дней — снимки раньше ${earliestWeatherDate()} собрать нельзя`);
+    }
+  }
 
   // Демо-неделя по умолчанию: 27 августа – 3 сентября 2026, четыре грозовых дня над регионом.
   // Она же укладывается в 31 день истории Open-Meteo, поэтому у пятен есть осадки и оценки.
@@ -98,7 +128,9 @@ async function main() {
   const today = local(now.getTime()).date;
   let weather = new Map();
   if (spots.length) {
-    weather = await fetchDaily(spots.map((s) => ({ lat: s.lat, lon: s.lon })), { today });
+    // Чистка кэша — только в обычном режиме: сборка снимка за прошлую дату
+    // раньше удаляла кэш соседних снимков, и они пересобирались с нуля.
+    weather = await fetchDaily(spots.map((s) => ({ lat: s.lat, lon: s.lon })), { today, prune: !asOf && demo === null });
     log(`погода получена для ${weather.size} точек`);
   }
 
@@ -135,6 +167,15 @@ async function main() {
       tempText: a.tempRange ? `днём ${a.tempRange[0]}–${a.tempRange[1]} °C` : '—',
       chart: a.chart,
     });
+  }
+
+  // Защита от затирания рабочих данных: если пятна были, а после погоды не осталось
+  // ни одного, прежний файл лучше не трогать. Проверяем здесь, до сетки осадков:
+  // иначе полторы минуты запросов тратились впустую именно тогда, когда лимит исчерпан.
+  if (spots.length && !ready.length) {
+    log('ни одно пятно не получило погоду — прежний файл оставляем без изменений');
+    process.exitCode = 1;
+    return;
   }
 
   // Самые свежие грозы наверх: по ним и планируется поездка.
@@ -175,20 +216,28 @@ async function main() {
     ]);
 
   // 5. Сильные дожди над лесом — контроль: где дождь был такой же, а молний нет.
-  let rain = { stepDeg: 0.1, cells: [] };
+  //
+  // Отказ службы погоды — это именно отказ, а не измерение «дождя не было»:
+  // пустая сетка раньше записывалась как факт и выглядела на карте как сухая неделя.
+  let rain = null;
+  let rainError = null;
   try {
     const inForest = await loadForestMask();
     if (!inForest) {
-      log('слой лесов не найден — осадки пропускаем (выполните npm run forests)');
+      rainError = 'слой лесов не собран — выполните npm run forests';
+      log(rainError);
     } else {
       rain = await fetchRainGrid(BBOX, { from, to: now, keep: inForest });
-      log(`осадки над лесом: ${rain.cells.length} точек`);
+      log(`сильных дождей над лесом: ${rain.cells.length} точек (от ${rain.minMm} мм за сутки)`);
     }
   } catch (e) {
+    rainError = e.message;
     log(`осадки не собрались: ${e.message}`);
   }
 
   const payload = {
+    // Версия формата: в первой давность разрядов была в сутках, во второй — в часах.
+    version: 2,
     generatedAt: new Date().toISOString(),
     dataThrough: latest || now.toISOString(),
     windowFrom: from.toISOString(),
@@ -202,6 +251,7 @@ async function main() {
     spots: ready,
     strikes,
     rain,
+    rainError,
     stats: {
       frames: frames.length,
       passes: passes.length,
@@ -210,22 +260,13 @@ async function main() {
     },
   };
 
-  // Защита от затирания рабочих данных: если пятна были, а после погоды не осталось
-  // ни одного (например, исчерпан лимит Open-Meteo), прежний файл лучше не трогать.
-  if (spots.length && !ready.length) {
-    log('ни одно пятно не получило погоду — прежний файл оставляем без изменений');
-    process.exitCode = 1;
-    return;
-  }
-
-  await fs.mkdir(path.dirname(OUT), { recursive: true });
-  await fs.writeFile(OUT, JSON.stringify(payload));
+  await writeAtomic(OUT, JSON.stringify(payload));
   const size = (await fs.stat(OUT)).size;
   log(`записано ${OUT} (${Math.round(size / 1024)} КБ), пятен: ${ready.length}`);
 
-  // Кадры чистим только в обычном режиме: историческим они как раз нужны.
+  // Кадры чистим только в обычном режиме и только те, что не нужны ни одному снимку.
   if (demo === null && !asOf) {
-    const removed = await pruneFrames(new Date(Date.now() - (days + 2) * 86400_000));
+    const removed = await pruneFrames(await framesCutoff(days));
     if (removed) log(`удалено старых файлов кадров: ${removed}`);
   }
 }

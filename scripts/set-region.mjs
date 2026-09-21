@@ -65,6 +65,15 @@ async function main() {
     log(`кэш кадров очищен: ${files.length} файлов`);
   } catch {}
 
+  // Сетка дождя тоже привязана к прямоугольнику. Ключ кэша теперь включает область,
+  // но старые файлы (без области в имени) убираем, чтобы не занимали место зря.
+  const cache = path.join(ROOT, 'data', 'cache');
+  try {
+    const stale = (await fs.readdir(cache)).filter((f) => /^rain-\d{4}-/.test(f));
+    for (const f of stale) await fs.unlink(path.join(cache, f));
+    if (stale.length) log(`кэш осадков прежнего региона очищен: ${stale.length} файлов`);
+  } catch {}
+
   log('собираем леса региона…');
   await run('build-forests.mjs');
 

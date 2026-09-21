@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { LIGHTNING_START, isCalendarDate } from './lib/config.mjs';
+import { earliestWeatherDate, localDate } from './lib/weather.mjs';
 
 const ROOT = process.cwd();
 const PUBLIC = path.join(ROOT, 'public');
@@ -49,6 +51,13 @@ async function writeFinds(data) {
  */
 let running = null;
 
+/**
+ * Чем закончилась последняя сборка: {date, ok, error, at}. Без этого упавшая
+ * сборка снимка выглядела в браузере точно так же, как удачная — плашка просто
+ * исчезала, и человек ждал файл, которого уже не будет.
+ */
+let lastRun = null;
+
 const buildingDate = () => running?.date || null;
 
 function runUpdate(reason, args = [], date = null) {
@@ -56,13 +65,27 @@ function runUpdate(reason, args = [], date = null) {
   console.log(`[update] старт (${reason})`);
   const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], { stdio: 'inherit' });
   running = { child, date };
-  const done = (msg) => {
+  const done = (msg, error) => {
     if (running?.child === child) running = null;
+    lastRun = { date, ok: !error, error: error || null, at: new Date().toISOString() };
     console.log(`[update] ${msg}`);
   };
-  child.on('exit', (code) => done(`завершено с кодом ${code}`));
-  child.on('error', (e) => done(`не запустилось: ${e.message}`));
+  child.on('exit', (code) => done(
+    `завершено с кодом ${code}`,
+    code === 0 ? null : `сборка завершилась с ошибкой (код ${code}) — подробности в окне, где запущен сервер`,
+  ));
+  child.on('error', (e) => done(`не запустилось: ${e.message}`, `не удалось запустить сборку: ${e.message}`));
   return true;
+}
+
+/** Проверка даты для режима истории: существует ли такой день и есть ли за него данные. */
+function checkHistoryDate(date) {
+  if (!isCalendarDate(date)) throw new Error('нужна существующая дата вида ГГГГ-ММ-ДД');
+  if (date > localDate()) throw new Error('это дата в будущем');
+  if (date < LIGHTNING_START) throw new Error(`молнии есть только с ${LIGHTNING_START}`);
+  const earliest = earliestWeatherDate();
+  if (date < earliest) throw new Error(`погода есть примерно за три последних месяца — снимок раньше ${earliest} собрать не из чего`);
+  return date;
 }
 
 async function historyDates() {
@@ -102,12 +125,23 @@ async function serveStatic(req, res, urlPath) {
     return;
   }
   try {
-    const body = await fs.readFile(file);
-    res.writeHead(200, {
+    // Кэш с проверкой: браузер хранит файл, но каждый раз спрашивает, не изменился ли он.
+    // Прежний «на сутки без проверки» оставлял на экране леса прежнего региона после
+    // `npm run region`, а «не хранить вовсе» заставлял качать 3 МБ при каждой загрузке.
+    const st = await fs.stat(file);
+    const tag = `W/"${st.size.toString(16)}-${Math.round(st.mtimeMs).toString(16)}"`;
+    const headers = {
       'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      // Локальное приложение: кэшируем только тяжёлый слой лесов, он не меняется.
-      'cache-control': file.endsWith('forests.json') ? 'public, max-age=86400' : 'no-store',
-    });
+      'cache-control': 'no-cache',
+      etag: tag,
+      'last-modified': st.mtime.toUTCString(),
+    };
+    if (req.headers['if-none-match'] === tag) {
+      res.writeHead(304, headers).end();
+      return;
+    }
+    const body = await fs.readFile(file);
+    res.writeHead(200, headers);
     res.end(body);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('Не найдено');
@@ -148,7 +182,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/history') {
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': MIME['.json'] })
-        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate() }));
+        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate(), lastRun }));
       return;
     }
     if (req.method === 'POST') {
@@ -156,21 +190,21 @@ const server = http.createServer(async (req, res) => {
       req.on('data', (c) => { body += c; if (body.length > 1e4) req.destroy(); });
       req.on('end', async () => {
         try {
-          const { date } = JSON.parse(body || '{}');
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('нужна дата вида ГГГГ-ММ-ДД');
+          const date = checkHistoryDate(JSON.parse(body || '{}').date);
           const dates = await historyDates();
           if (dates.includes(date)) {
             res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ ready: true }));
             return;
           }
+          // Занято может быть и обычным обновлением — у него даты нет, и раньше
+          // браузер получал building: null и рапортовал о сборке, которой не было.
           if (running) {
-            res.writeHead(200, { 'content-type': MIME['.json'] })
-              .end(JSON.stringify({ building: buildingDate(), busy: !buildingDate() }));
-            return;
+            const busyWith = buildingDate();
+            throw new Error(busyWith
+              ? `сейчас собирается ${busyWith} — дождитесь окончания`
+              : 'сейчас идёт обычное обновление данных, попробуйте через минуту');
           }
-          if (!runUpdate(`история на ${date}`, [`--date=${date}`], date)) {
-            throw new Error('сейчас идёт другое обновление, попробуйте через минуту');
-          }
+          runUpdate(`история на ${date}`, [`--date=${date}`], date);
           res.writeHead(202, { 'content-type': MIME['.json'] }).end(JSON.stringify({ building: date }));
         } catch (e) {
           res.writeHead(400, { 'content-type': MIME['.json'] }).end(JSON.stringify({ error: e.message }));
