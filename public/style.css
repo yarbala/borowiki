@@ -380,6 +380,17 @@ input[type=range] { accent-color: var(--accent); }
 .actions .mark:hover { background: var(--surface); }
 .actions .mark[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
+.notice {
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: 10px;
+  border-left: 3px solid var(--faint);
+}
+
+.notice.strict { color: var(--danger); border-left-color: var(--danger); }
+
 .markrow {
   display: flex;
   align-items: center;

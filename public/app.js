@@ -178,7 +178,7 @@ function drawSpots() {
         radius: 2.6,
         stroke: false,
         fillColor: '#6B4EE6',
-        fillOpacity: Math.max(0.3, 1 - ago / 9),
+        fillOpacity: Math.max(0.3, 1 - ago / 8),
         interactive: false,
       }),
     ),
@@ -420,9 +420,12 @@ function renderCard() {
   close.onclick = () => setSheet('collapsed', null);
   nav.append(back, close);
 
+  // Название уже может содержать деревню («Лес у Pokój») — тогда не повторяем её.
+  const place = sp.place && !sp.forest.includes(sp.place) ? `у ${sp.place} · ` : '';
+
   const head = el('div', {},
     el('div', { className: 'card-title', textContent: sp.forest }),
-    el('div', { className: 'card-place', textContent: `${sp.place ? 'у ' + sp.place + ' · ' : ''}${dist} км от дома` }),
+    el('div', { className: 'card-place', textContent: `${place}${dist} км от дома` }),
     el('div', { className: 'card-coords', textContent: `${sp.lat.toFixed(4)} N, ${sp.lon.toFixed(4)} E · пятно ~${sp.radiusM >= 1000 ? (sp.radiusM / 1000).toFixed(1) + ' км' : sp.radiusM + ' м'}` }),
   );
 
@@ -465,7 +468,19 @@ function renderCard() {
   bEmpty.onclick = () => mark('empty');
   actions.append(bFound, bEmpty);
 
-  box.append(nav, head, scoreBlock, facts, renderChart(sp), actions);
+  box.append(nav, head, scoreBlock, facts);
+
+  // Сбор грибов в национальных парках и резерватах запрещён — предупреждаем до выезда.
+  if (sp.protectedArea) {
+    box.append(el('div', {
+      className: sp.protectedArea.strict ? 'notice strict' : 'notice',
+      textContent: sp.protectedArea.strict
+        ? `${sp.protectedArea.name}: сбор грибов запрещён`
+        : `${sp.protectedArea.name} — охраняемая территория, проверьте правила`,
+    }));
+  }
+
+  box.append(renderChart(sp), actions);
 
   if (mk) {
     const row = el('div', { className: 'markrow' },
@@ -480,11 +495,10 @@ function renderCard() {
 function renderStatus() {
   const d = state.data;
   const status = $('status');
-  const через = new Date(d.dataThrough);
   const hours = (Date.now() - new Date(d.generatedAt).getTime()) / 3600e3;
-  state.stale = hours > 3;
+  state.stale = !d.demo && hours > 3;
 
-  const hhmm = через.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const hhmm = new Date(d.dataThrough).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   $('statusText').textContent = d.demo
     ? `Демо-неделя ${d.demoLabel} · молнии MTG · леса OSM`
     : state.stale
@@ -587,10 +601,30 @@ function wire() {
 
 // ---------- запуск ----------
 
+/** Пустые данные: карта должна работать, даже если сборка ещё не отработала. */
+const EMPTY = {
+  generatedAt: new Date().toISOString(),
+  dataThrough: new Date().toISOString(),
+  demo: false,
+  home: { lat: 51.1079, lon: 17.0385, label: 'Вроцлав' },
+  spots: [],
+  strikes: [],
+};
+
 async function boot() {
-  const res = await fetch('./data/spots.json', { cache: 'no-store' });
-  state.data = await res.json();
-  if (!state.home) state.home = { ...state.data.home, label: state.data.home.label };
+  let problem = null;
+  try {
+    const res = await fetch('./data/spots.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status === 404 ? 'данные ещё не собраны' : `HTTP ${res.status}`);
+    state.data = await res.json();
+  } catch (e) {
+    state.data = EMPTY;
+    problem = e.message;
+  }
+
+  if (!state.home) state.home = { ...state.data.home };
+  // Считаем до первой отрисовки: от этого зависит прозрачность пятен на карте.
+  state.stale = !state.data.demo && (Date.now() - new Date(state.data.generatedAt).getTime()) / 3600e3 > 3;
 
   try {
     const finds = await fetch('/api/finds').then((r) => (r.ok ? r.json() : null));
@@ -606,9 +640,11 @@ async function boot() {
   fitHome();
   wire();
   render();
+
+  if (problem) {
+    $('statusText').textContent = `Нет данных: ${problem}. Запустите npm run update`;
+    $('status').classList.add('stale');
+  }
 }
 
-boot().catch((e) => {
-  $('statusText').textContent = `Не удалось загрузить данные: ${e.message}`;
-  $('status').classList.add('stale');
-});
+boot();

@@ -106,6 +106,7 @@ async function main() {
       forest: sp.forest,
       forestNamed: sp.forestNamed,
       place: sp.place,
+      protectedArea: sp.protectedArea,
       lat: sp.lat,
       lon: sp.lon,
       radiusM: sp.radiusM,
