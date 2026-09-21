@@ -1,0 +1,480 @@
+/* Стили перенесены из макета Claude Design один в один: цвета, размеры, тени, радиусы. */
+
+:root {
+  --bg: #EDEAE3;
+  --panel: #FFFFFF;
+  --ink: #1B1B18;
+  --ink-2: #4A4944;
+  --muted: #6B6A64;
+  --faint: #9A9891;
+  --accent: #2B5FB3;
+  --accent-hover: #244F96;
+  --surface: #F6F4EF;
+  --surface-2: #F3F1EC;
+  --surface-3: #EAE7E0;
+  --track: #EFEDE7;
+  --bar-empty: #ECEAE4;
+  --rain: #8FA9DA;
+  --bolt: #6B4EE6;
+  --danger: #C0261B;
+  --hairline: rgba(0, 0, 0, .12);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 8px 24px rgba(0, 0, 0, .22);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .12);
+  --shadow-sheet: 0 -2px 28px rgba(0, 0, 0, .25);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  font-family: 'Onest', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.35;
+  -webkit-tap-highlight-color: transparent;
+}
+
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+input, button { font-family: inherit; }
+input[type=range] { accent-color: var(--accent); }
+[hidden] { display: none !important; }
+
+.leaflet-container { background: var(--bg); font-family: inherit; outline: 0; }
+.leaflet-interactive { cursor: pointer; }
+
+.screen { position: relative; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; }
+#map { position: absolute; inset: 0; z-index: 0; }
+
+/* ---------- Верхняя панель ---------- */
+
+.top {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  right: 12px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  gap: 8px;
+  align-items: start;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+.top-center { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+
+.pill {
+  display: flex;
+  padding: 4px;
+  background: var(--panel);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.pill button {
+  border: 0;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--ink);
+  transition: background .15s, color .15s;
+}
+
+.pill button[aria-pressed="true"] { background: var(--accent); color: var(--panel); }
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, .94);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink-2);
+  box-shadow: var(--shadow-soft);
+  max-width: 100%;
+}
+
+.legend span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.legend i { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1.5px #FFF, 0 0 0 2.5px rgba(0, 0, 0, .12); }
+
+.pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 14px;
+  background: var(--accent);
+  color: var(--panel);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+}
+
+.pick-bar button {
+  border: 0;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .18);
+  color: var(--panel);
+}
+
+/* ---------- Круглые кнопки ---------- */
+
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  transition: background .15s, color .15s;
+}
+
+.icon-btn:hover { background: var(--surface-2); }
+#settingsBtn { justify-self: end; }
+#stormBtn[aria-pressed="true"] { background: var(--bolt); color: var(--panel); }
+#stormBtn[aria-pressed="true"]:hover { background: var(--bolt); }
+.icon-btn svg { display: block; }
+
+.ico-settings { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.ico-settings circle { fill: var(--panel); }
+.ico-locate { fill: none; stroke: currentColor; stroke-width: 1.7; }
+.ico-locate .dot { fill: currentColor; stroke: none; }
+
+/* ---------- Низ ---------- */
+
+.bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.fabs {
+  width: min(100%, 480px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.sheet {
+  width: min(100%, 480px);
+  background: var(--panel);
+  border-radius: 20px 20px 0 0;
+  box-shadow: var(--shadow-sheet);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 110px);
+  max-height: calc(100dvh - 110px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.grabber { display: flex; justify-content: center; padding: 8px 0 0; }
+.grabber div { width: 36px; height: 4px; border-radius: 2px; background: rgba(0, 0, 0, .14); }
+
+.sheet-handle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: 8px 18px 12px;
+  color: inherit;
+}
+
+.sheet-handle-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sheet-handle-text .t { font-size: 15px; font-weight: 600; }
+.sheet-handle-text .s { font-size: 12.5px; color: var(--muted); }
+
+.chev {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-right: 1.8px solid var(--muted);
+  border-bottom: 1.8px solid var(--muted);
+  margin-right: 4px;
+  transition: transform .2s;
+  transform: rotate(-135deg);
+}
+
+.chev.open { transform: rotate(45deg); }
+
+/* ---------- Список мест ---------- */
+
+.list { overflow: auto; min-height: 0; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+
+.list-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: 10px;
+  border-radius: 12px;
+  color: inherit;
+}
+
+.list-item:hover { background: var(--surface); }
+.list-item .rank { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.list-item .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.list-item .name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-item .sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-item .score { display: flex; align-items: center; gap: 7px; }
+.list-item .score i { width: 10px; height: 10px; border-radius: 50%; }
+.list-item .score b { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.list-item .dist { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+
+.empty-note { padding: 14px 10px 10px; color: var(--muted); font-size: 13px; }
+
+/* ---------- Карточка места ---------- */
+
+.card { overflow: auto; min-height: 0; padding: 0 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+
+.card-nav { display: flex; align-items: center; justify-content: space-between; padding-top: 2px; }
+
+.backbtn {
+  border: 0;
+  margin: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.backbtn i { width: 7px; height: 7px; border-left: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg); }
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-btn:hover { background: var(--surface-3); }
+
+.card-title { font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.card-place { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.card-coords { font-size: 12.5px; color: var(--faint); margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+.score-block { display: flex; flex-direction: column; gap: 8px; }
+.score-row { display: flex; align-items: baseline; gap: 10px; }
+.score-row .big { font-size: 44px; font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.score-row .status { font-size: 15px; font-weight: 600; }
+.score-row .horizon { margin-left: auto; font-size: 12.5px; color: var(--muted); }
+.score-bar { height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.score-bar div { height: 100%; border-radius: 2px; transition: width .3s; }
+.peak { font-size: 15px; font-weight: 500; }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: 12px;
+}
+
+.facts div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.facts .k { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+.facts .v { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
+.facts .v svg { display: block; color: var(--bolt); flex: none; }
+
+/* ---------- График за 30 дней ---------- */
+
+.chart-wrap { display: flex; flex-direction: column; gap: 6px; }
+.chart { position: relative; height: 96px; }
+.chart-bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; }
+.chart-bars > div { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 2px; }
+.chart-bars .bar { width: 100%; border-radius: 2px 2px 0 0; }
+.chart-bars svg { display: block; color: var(--bolt); }
+.chart-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.chart-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
+.chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.chart-legend span { display: flex; align-items: center; gap: 5px; }
+.chart-legend i { width: 8px; height: 8px; border-radius: 2px; }
+.chart-legend .line { width: 14px; height: 2px; border-radius: 0; background: var(--ink); }
+
+/* ---------- Кнопки карточки ---------- */
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.actions a, .actions button {
+  height: 44px;
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.actions .route { flex: 1 1 120px; background: var(--accent); color: var(--panel); border: 0; }
+.actions .route:hover { background: var(--accent-hover); color: var(--panel); }
+.actions .mark { flex: 1 1 110px; border: 1px solid var(--hairline); background: var(--panel); color: var(--ink); margin: 0; }
+.actions .mark.narrow { flex: 0 1 90px; }
+.actions .mark:hover { background: var(--surface); }
+.actions .mark[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+.markrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: 10px;
+}
+
+.markrow button { border: 0; margin: 0; background: transparent; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; text-decoration: underline; padding: 0; }
+
+/* ---------- Строка состояния ---------- */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px 10px;
+  border-top: 1px solid rgba(0, 0, 0, .06);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.status i { width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.status.stale { color: var(--danger); }
+.statusbar a { color: var(--faint); text-decoration: none; white-space: nowrap; }
+
+/* ---------- Настройки ---------- */
+
+.modal {
+  position: absolute;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(10, 10, 12, .45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.modal-panel {
+  width: min(100%, 480px);
+  background: var(--panel);
+  border-radius: 20px 20px 0 0;
+  padding: 18px 18px calc(22px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow: 0 -2px 28px rgba(0, 0, 0, .35);
+}
+
+.modal-head { display: flex; align-items: center; justify-content: space-between; }
+.modal-title { font-size: 17px; font-weight: 600; }
+
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 12.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.field-value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.field-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.field-row.baseline { align-items: baseline; }
+.field-row.small { font-size: 11px; color: var(--faint); }
+.coords { font-size: 12.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.field input[type=text] {
+  height: 44px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--panel);
+  outline: none;
+  width: 100%;
+}
+
+.field input[type=range] { width: 100%; margin: 0; }
+
+.linkbtn { border: 0; margin: 0; background: transparent; font: inherit; font-size: 13px; font-weight: 600; color: var(--accent); cursor: pointer; padding: 6px 0; }
+
+.primary {
+  height: 46px;
+  border: 0;
+  margin: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--panel);
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.primary:hover { background: var(--accent-hover); }
+.footnote { font-size: 12px; color: var(--faint); text-align: center; }

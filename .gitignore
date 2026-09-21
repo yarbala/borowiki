@@ -1,0 +1,13 @@
+.playwright-cli/
+.DS_Store
+.env
+.claude/settings.local.json
+node_modules/
+
+# Кэш загруженных данных: кадры молний, векторные тайлы, ответы погоды
+data/frames/
+data/tiles/
+data/cache/
+
+# Результат сборки — создаётся запуском npm run update
+public/data/spots.json

@@ -1,0 +1,15 @@
+{
+  "name": "borowiki",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Карта мест, где за последние 7 дней гроза прошла над лесом",
+  "scripts": {
+    "start": "node server.mjs",
+    "update": "node scripts/update.mjs",
+    "update:demo": "node scripts/update.mjs --demo"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
