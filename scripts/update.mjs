@@ -11,6 +11,7 @@ import { loadFrames, pruneFrames } from '../lib/lightning.mjs';
 import { buildPasses } from '../lib/storms.mjs';
 import { buildSpots } from '../lib/spots.mjs';
 import { analyse, fetchDaily, fetchRainGrid, snap } from '../lib/weather.mjs';
+import { loadForestMask } from '../lib/forestmask.mjs';
 
 const DATA_DIR = path.join(process.cwd(), 'public', 'data');
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
@@ -173,13 +174,18 @@ async function main() {
       Math.max(0, Math.round((now.getTime() - p.endMs) / 3600_000)),
     ]);
 
-  // 5. Осадки по всему региону — контроль: где дождь был, а молний нет.
-  let rain = { stepDeg: 0.2, cells: [] };
+  // 5. Сильные дожди над лесом — контроль: где дождь был такой же, а молний нет.
+  let rain = { stepDeg: 0.1, cells: [] };
   try {
-    rain = await fetchRainGrid(BBOX, { from, to: now });
-    log(`сетка осадков: ${rain.cells.length} ячеек с дождём`);
+    const inForest = await loadForestMask();
+    if (!inForest) {
+      log('слой лесов не найден — осадки пропускаем (выполните npm run forests)');
+    } else {
+      rain = await fetchRainGrid(BBOX, { from, to: now, keep: inForest });
+      log(`осадки над лесом: ${rain.cells.length} точек`);
+    }
   } catch (e) {
-    log(`осадки по региону не собрались: ${e.message}`);
+    log(`осадки не собрались: ${e.message}`);
   }
 
   const payload = {

@@ -36,9 +36,12 @@
         <button type="button" id="cancelPick">Отмена</button>
       </div>
 
-      <div class="legend" id="legend" title="Чем свежее гроза, тем краснее метка">
+      <div class="legend" id="legend" title="Чем свежее событие, тем насыщеннее метка">
         <span class="ramp-label">только что</span>
-        <span class="ramp"></span>
+        <span class="ramps">
+          <span class="ramp storm"></span>
+          <span class="ramp rain" id="rainRamp" hidden></span>
+        </span>
         <span class="ramp-label">7 дней</span>
       </div>
     </div>

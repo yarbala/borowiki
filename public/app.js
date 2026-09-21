@@ -22,6 +22,15 @@ const AGE_RAMP = [
   [168, '#B9B6AD'],  // неделя
 ];
 
+/** Дождь — своя шкала свежести, синяя: чем ближе к дате, тем насыщеннее. */
+const RAIN_RAMP = [
+  [0, '#0E3C8C'],
+  [12, '#1B4FA8'],
+  [36, '#3E79C9'],
+  [84, '#8FB4E0'],
+  [168, '#CBD9EA'],
+];
+
 function ageColor(hours) {
   const h = Math.max(0, Math.min(168, hours ?? 168));
   for (let i = 1; i < AGE_RAMP.length; i++) {
@@ -113,6 +122,8 @@ const svgEl = (tag, attrs) => {
 };
 
 const BOLT_PATH = '7.5,1 2.4,6.9 5.7,6.9 4.5,11 9.6,5.1 6.3,5.1';
+/** Сильным считаем дождь от этого значения за сутки — слабый на карте только мешает. */
+const RAIN_MIN_MM = 10;
 
 function boltSvg(size, color) {
   const s = svgEl('svg', { width: size, height: size, viewBox: '0 0 12 12' });
@@ -135,22 +146,34 @@ let map, mapReady = false, clickedFeature = false;
 /** Та же шкала свежести, но выражением MapLibre. */
 const ageColorExpr = () => ['interpolate', ['linear'], ['get', 'ago'], ...AGE_RAMP.flat()];
 
-/** Иконка молнии: рисуем в canvas, чтобы не тянуть спрайты. */
-function boltImage(size = 26) {
+/** Иконки молнии и капли: рисуем в canvas, чтобы не тянуть спрайты. */
+function iconImage(draw, size = 26) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const g = c.getContext('2d');
-  const k = size / 12;
+  g.fillStyle = '#FFFFFF';
+  draw(g, size / 12);
+  g.fill();
+  return { width: size, height: size, data: new Uint8Array(g.getImageData(0, 0, size, size).data) };
+}
+
+const drawBolt = (g, k) => {
   BOLT_PATH.split(' ').forEach((pair, i) => {
     const [x, y] = pair.split(',').map(Number);
     if (i === 0) g.moveTo(x * k, y * k);
     else g.lineTo(x * k, y * k);
   });
   g.closePath();
-  g.fillStyle = '#FFFFFF';
-  g.fill();
-  return { width: size, height: size, data: new Uint8Array(g.getImageData(0, 0, size, size).data) };
-}
+};
+
+/** Капля: остриё сверху, круглое основание снизу. */
+const drawDrop = (g, k) => {
+  g.moveTo(6 * k, 1.2 * k);
+  g.bezierCurveTo(9.6 * k, 5.4 * k, 10.2 * k, 6.9 * k, 10.2 * k, 8.1 * k);
+  g.arc(6 * k, 8.1 * k, 4.2 * k, 0, Math.PI);
+  g.bezierCurveTo(1.8 * k, 6.9 * k, 2.4 * k, 5.4 * k, 6 * k, 1.2 * k);
+  g.closePath();
+};
 
 function circlePolygon(lat, lon, km, points = 128) {
   const ring = [];
@@ -180,19 +203,22 @@ const spotsGeoJson = () =>
   })));
 
 /**
- * Осадки: квадрат на каждую ячейку сетки. Цвет — по самому сильному дождю за окно,
- * а не по сумме: так его можно сравнивать с грозой, которая тоже событие.
+ * Сильные дожди над лесом — каплями, как грозы молниями: цвет по свежести,
+ * размер по миллиметрам. Слабый дождь не показываем вовсе.
  */
+/** В старых снимках у ячейки не было времени дождя — такой слой не показываем. */
+const rainHasTime = () => (state.data.rain?.cells || []).every((c) => c.length >= 4);
+
 function rainGeoJson() {
-  const { stepDeg = 0.2, cells = [] } = state.data.rain || {};
-  const h = stepDeg / 2;
-  return fc(cells.map(([lat, lon, mm, ago = 0, total = mm]) => ({
-    type: 'Feature',
-    geometry: { type: 'Polygon', coordinates: [[
-      [lon - h, lat - h], [lon + h, lat - h], [lon + h, lat + h], [lon - h, lat + h], [lon - h, lat - h],
-    ]] },
-    properties: { mm, ago, total },
-  })));
+  const { cells = [] } = state.data.rain || {};
+  if (!rainHasTime()) return fc([]);
+  return fc(cells
+    .filter(([, , mm]) => mm >= RAIN_MIN_MM)
+    .map(([lat, lon, mm, ago = 0, total = mm]) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [lon, lat] },
+      properties: { mm, ago, total, agoH: ago * 24 },
+    })));
 }
 
 const strikesGeoJson = () =>
@@ -229,7 +255,8 @@ function initMap() {
       map.setPaintProperty('landcover_wood', 'fill-opacity', WOOD_OPACITY);
     }
 
-    map.addImage('bolt', boltImage());
+    map.addImage('bolt', iconImage(drawBolt));
+    map.addImage('drop', iconImage(drawDrop));
 
     // Свои слои — под подписями, чтобы названия городов оставались читаемыми.
     const labels = map.getStyle().layers.find((l) => l.type === 'symbol');
@@ -251,13 +278,27 @@ function initMap() {
     map.addSource('rain', { type: 'geojson', data: rainGeoJson() });
     map.addLayer({
       id: 'rain',
-      type: 'fill',
+      type: 'circle',
       source: 'rain',
       layout: { visibility: state.rain ? 'visible' : 'none' },
       paint: {
-        'fill-color': ['interpolate', ['linear'], ['get', 'mm'], 0, '#E4EEF8', 8, '#9FB8DF', 18, '#4E7CC4', 30, '#1B3E80'],
-        'fill-opacity': 0.45,
-        'fill-antialias': false,
+        // Важно место, а не количество: размер одинаковый, цвет — по свежести.
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 6, 9, 10, 12, 14],
+        'circle-color': ['interpolate', ['linear'], ['get', 'agoH'], ...RAIN_RAMP.flat()],
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-width': 2,
+      },
+    }, before);
+    map.addLayer({
+      id: 'rain-drop',
+      type: 'symbol',
+      source: 'rain',
+      layout: {
+        visibility: state.rain ? 'visible' : 'none',
+        'icon-image': 'drop',
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.35, 9, 0.55, 12, 0.75],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
       },
     }, before);
 
@@ -357,7 +398,7 @@ function initMap() {
       const when = p.ago === 0 ? 'сегодня' : p.ago === 1 ? 'вчера' : `${p.ago} ${plural(p.ago, ['день', 'дня', 'дней'])} назад`;
       new maplibregl.Popup({ closeButton: false, offset: 6 })
         .setLngLat(e.lngLat)
-        .setHTML(`<b>${p.mm} мм</b> · ${when}<br><span class="popup-sub">за неделю ${p.total} мм</span>`)
+        .setHTML(`<b>${p.mm} мм</b> · ${when}<br><span class="popup-sub">за окно ${p.total} мм</span>`)
         .addTo(map);
     });
 
@@ -728,7 +769,13 @@ function render() {
   $('legend').hidden = state.picking;
   $('settings').hidden = !state.settingsOpen;
   $('strikesBtn').setAttribute('aria-pressed', String(state.strikes));
-  $('rainBtn').setAttribute('aria-pressed', String(state.rain));
+  const rainOk = rainHasTime() && (state.data.rain?.cells || []).length > 0;
+  $('rainBtn').disabled = !rainOk;
+  $('rainBtn').title = rainOk
+    ? 'Сильные дожди над лесом за окно'
+    : 'Для этого снимка осадки не собраны — пересоберите его';
+  $('rainBtn').setAttribute('aria-pressed', String(state.rain && rainOk));
+  $('rainRamp').hidden = !(state.rain && rainOk);
   $('homeCoords').textContent = `${state.home.lat.toFixed(4)}, ${state.home.lon.toFixed(4)}`;
   $('radiusLabel').textContent = `${$('radius').value} км`;
 
@@ -803,7 +850,7 @@ function wire() {
 
   $('rainBtn').onclick = () => {
     state.rain = !state.rain;
-    if (mapReady) map.setLayoutProperty('rain', 'visibility', state.rain ? 'visible' : 'none');
+    if (mapReady) for (const l of ['rain', 'rain-drop']) map.setLayoutProperty(l, 'visibility', state.rain ? 'visible' : 'none');
     render();
   };
 
