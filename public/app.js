@@ -439,6 +439,13 @@ function visibleSpots() {
     .filter((x) => x.dist <= state.radius + 0.5);
 }
 
+/** Расстояние от дома до центра области данных, км. */
+const homeOutsideKm = () => {
+  const d = state.data;
+  if (!d?.home) return 0;
+  return distKm(state.home, d.home.lat, d.home.lon);
+};
+
 function renderHorizons() {
   const box = $('horizons');
   box.textContent = '';
@@ -667,11 +674,26 @@ function render() {
   if (state.sheet === 'list') renderList(top);
   if (state.sheet === 'card') renderCard();
 
+  // Что означает переключатель: оценка не «когда была гроза», а «насколько лес готов» в этот день.
+  $('horizonHint').textContent = state.horizon === 0
+    ? 'готовность леса сегодня · грибы идут через 5–14 дней после грозы'
+    : `готовность ${horizonLabel()} · грибы идут через 5–14 дней после грозы`;
+  $('horizonHint').hidden = state.picking;
+
   $('pickBar').hidden = !state.picking;
   $('legend').hidden = state.picking;
   $('settings').hidden = !state.settingsOpen;
   $('stormBtn').setAttribute('aria-pressed', String(state.storms));
   $('homeCoords').textContent = `${state.home.lat.toFixed(4)}, ${state.home.lon.toFixed(4)}`;
+
+  const away = homeOutsideKm();
+  const d = state.data;
+  const note = $('regionNote');
+  const far = away > (d.dataRadiusKm || 200);
+  note.classList.toggle('warn', far);
+  note.textContent = far
+    ? `Дом в ${Math.round(away)} км от области данных. Молнии и леса собраны только вокруг ${d.home.label} (${d.dataRadiusKm || 200} км). Чтобы перенести область сюда, выполните на компьютере: npm run region -- "${state.home.label}"`
+    : `Область данных: ${d.home.label} + ${d.dataRadiusKm || 200} км. Дом влияет на расстояния и список рядом, но не расширяет её.`;
   $('radiusLabel').textContent = `${$('radius').value} км`;
 
   renderStatus();
@@ -709,6 +731,32 @@ function wire() {
   $('radius').oninput = () => {
     $('radiusLabel').textContent = `${$('radius').value} км`;
   };
+  const findPlace = async () => {
+    const q = ($('homeLabel').value || '').trim();
+    if (q.length < 2) return;
+    const note = $('regionNote');
+    note.textContent = 'Ищем…';
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=ru&q=${encodeURIComponent(q)}`;
+      const r = await fetch(url, { headers: { accept: 'application/json' } });
+      const [hit] = await r.json();
+      if (!hit) { note.textContent = `Не нашлось: ${q}`; return; }
+      state.home = { lat: +(+hit.lat).toFixed(4), lon: +(+hit.lon).toFixed(4), label: hit.name || q };
+      $('homeLabel').value = state.home.label;
+      persist();
+      drawHome();
+      fitHome();
+      render();
+    } catch (e) {
+      note.textContent = `Поиск не сработал: ${e.message}`;
+    }
+  };
+
+  $('findHome').onclick = findPlace;
+  $('homeLabel').onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); findPlace(); }
+  };
+
   $('startPick').onclick = () => {
     state.settingsOpen = false;
     state.picking = true;

@@ -22,6 +22,7 @@
     <div></div>
     <div class="top-center">
       <div class="pill" id="horizons" role="group" aria-label="Горизонт прогноза"></div>
+      <div class="hint" id="horizonHint"></div>
 
       <div class="pick-bar" id="pickBar" hidden>
         Нажмите на карту — здесь будет дом
@@ -82,11 +83,15 @@
 
       <div class="field">
         <span class="field-label">Домашняя точка</span>
-        <input type="text" id="homeLabel" placeholder="Название" autocomplete="off">
+        <div class="search-row">
+          <input type="text" id="homeLabel" placeholder="Город или адрес — Enter для поиска" autocomplete="off">
+          <button type="button" class="linkbtn" id="findHome">Найти</button>
+        </div>
         <div class="field-row">
           <span class="coords" id="homeCoords"></span>
           <button type="button" class="linkbtn" id="startPick">Указать на карте</button>
         </div>
+        <div class="note" id="regionNote"></div>
       </div>
 
       <div class="field">

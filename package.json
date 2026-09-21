@@ -8,7 +8,8 @@
     "start": "node server.mjs",
     "update": "node scripts/update.mjs",
     "update:demo": "node scripts/update.mjs --demo",
-    "forests": "node scripts/build-forests.mjs"
+    "forests": "node scripts/build-forests.mjs",
+    "region": "node scripts/set-region.mjs"
   },
   "engines": {
     "node": ">=20"

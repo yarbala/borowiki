@@ -6,7 +6,7 @@
 //   node scripts/update.mjs --demo=2026-06-21 --days=7
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { DAYS, HOME, TZ } from '../lib/config.mjs';
+import { DATA_RADIUS_KM, DAYS, HOME, TZ } from '../lib/config.mjs';
 import { loadFrames, pruneFrames } from '../lib/lightning.mjs';
 import { buildPasses } from '../lib/storms.mjs';
 import { buildSpots } from '../lib/spots.mjs';
@@ -169,6 +169,7 @@ async function main() {
     demo: demo !== null,
     demoLabel: demo !== null ? `${local(from.getTime()).dayLabel} – ${local(now.getTime()).dayLabel}` : null,
     home: { lat: HOME.lat, lon: HOME.lon, label: HOME.label },
+    dataRadiusKm: DATA_RADIUS_KM,
     forests,
     spots: ready,
     strikes,
