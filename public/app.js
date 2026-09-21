@@ -71,9 +71,15 @@ function distKm(home, lat, lon) {
 
 const hIndex = () => (state.horizon === 7 ? 2 : state.horizon === 3 ? 1 : 0);
 
+/** Название уже может содержать деревню («Лес у Pokój») — тогда не повторяем её. */
+const placePrefix = (sp) => (sp.place && !sp.forest.includes(sp.place) ? `у ${sp.place} · ` : '');
+
+/** Точка отсчёта горизонта: сегодня, а в демо-режиме — конец демо-недели. */
+const refDate = () => (state.data.demo ? new Date(state.data.dataThrough) : new Date());
+
 function horizonLabel() {
   if (state.horizon === 0) return 'на сегодня';
-  const d = new Date();
+  const d = refDate();
   d.setDate(d.getDate() + state.horizon);
   return `на ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
@@ -105,11 +111,20 @@ function initMap() {
   map = L.map('map', { zoomControl: false, attributionControl: false });
   L.tileLayer(TILES.url, TILES.opts).addTo(map);
   map.createPane('spots').style.zIndex = 410;
+  // Разряды кладём над пятнами: они попадают в те же места, и снизу их было бы не видно.
+  map.createPane('strikes').style.zIndex = 415;
 
   outlineLayer = L.layerGroup().addTo(map);
   footLayer = L.layerGroup().addTo(map);
   pinLayer = L.layerGroup().addTo(map);
   homeLayer = L.layerGroup().addTo(map);
+
+  // Поворот телефона или изменение окна: Leaflet сам о новом размере не узнает.
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => map.invalidateSize(), 150);
+  });
 
   map.on('click', () => {
     if (state.picking) return;
@@ -170,11 +185,12 @@ function drawSpots() {
   }
 
   const strikes = state.data.strikes || [];
-  const canvas = L.canvas({ padding: 0.5 });
+  const canvas = L.canvas({ padding: 0.5, pane: 'strikes' });
   strikeLayer = L.layerGroup(
     strikes.map(([lat, lon, ago]) =>
       L.circleMarker([lat, lon], {
         renderer: canvas,
+        pane: 'strikes',
         radius: 2.6,
         stroke: false,
         fillColor: '#6B4EE6',
@@ -247,6 +263,8 @@ function setHome(lat, lon) {
   state.home = { lat: +lat.toFixed(4), lon: +lon.toFixed(4), label: 'Точка на карте' };
   state.picking = false;
   state.settingsOpen = true;
+  // Возвращаемся в настройки — поле с названием должно показывать новую точку.
+  $('homeLabel').value = state.home.label;
   persist();
   drawHome();
   render();
@@ -341,7 +359,7 @@ function renderList(top) {
       el('span', { className: 'rank', textContent: String(i + 1) }),
       el('span', { className: 'main' },
         el('span', { className: 'name', textContent: x.sp.forest }),
-        el('span', { className: 'sub', textContent: `${x.sp.place ? 'у ' + x.sp.place + ' · ' : ''}${x.sp.dayLabel} · ${x.sp.time}` })),
+        el('span', { className: 'sub', textContent: `${placePrefix(x.sp)}${x.sp.dayLabel} · ${x.sp.time}` })),
       el('span', { className: 'score' },
         el('i', { style: `background:${rampColor(x.score)}` }),
         el('b', { textContent: String(x.score) })),
@@ -385,10 +403,13 @@ function renderChart(sp) {
   const start = new Date(sp.chart.startDate + 'T12:00:00');
   const mid = new Date(start);
   mid.setDate(mid.getDate() + Math.floor(n / 2));
+  const last = new Date(start);
+  last.setDate(last.getDate() + n - 1);
   axis.append(
     el('span', { textContent: `${start.getDate()} ${MONTHS_SHORT[start.getMonth()]}` }),
     el('span', { textContent: `${mid.getDate()} ${MONTHS_SHORT[mid.getMonth()]}` }),
-    el('span', { textContent: 'сегодня' }),
+    // В демо-режиме «сегодня» — это конец демо-недели, поэтому пишем дату.
+    el('span', { textContent: state.data.demo ? `${last.getDate()} ${MONTHS_SHORT[last.getMonth()]}` : 'сегодня' }),
   );
 
   const legend = el('div', { className: 'chart-legend' });
@@ -420,12 +441,9 @@ function renderCard() {
   close.onclick = () => setSheet('collapsed', null);
   nav.append(back, close);
 
-  // Название уже может содержать деревню («Лес у Pokój») — тогда не повторяем её.
-  const place = sp.place && !sp.forest.includes(sp.place) ? `у ${sp.place} · ` : '';
-
   const head = el('div', {},
     el('div', { className: 'card-title', textContent: sp.forest }),
-    el('div', { className: 'card-place', textContent: `${place}${dist} км от дома` }),
+    el('div', { className: 'card-place', textContent: `${placePrefix(sp)}${dist} км от дома` }),
     el('div', { className: 'card-coords', textContent: `${sp.lat.toFixed(4)} N, ${sp.lon.toFixed(4)} E · пятно ~${sp.radiusM >= 1000 ? (sp.radiusM / 1000).toFixed(1) + ' км' : sp.radiusM + ' м'}` }),
   );
 

@@ -64,18 +64,19 @@ async function main() {
   const now = demo === null ? new Date() : new Date(`${demo || '2026-09-03'}T21:55:00Z`);
   const from = new Date(now.getTime() - days * 86400_000);
 
-  log(demo === null ? 'режим: последние сутки' : `режим: демо-неделя по ${now.toISOString().slice(0, 10)}`);
+  log(demo === null ? `режим: последние ${days} суток` : `режим: демо-неделя по ${now.toISOString().slice(0, 10)}`);
   log(`окно: ${from.toISOString()} .. ${now.toISOString()}`);
 
   // 1. Молнии
   const t0 = Date.now();
-  const { frames, fetched, cached, failed } = await loadFrames(from, now, {
+  const { frames, latest, fetched, cached, failed, skipped } = await loadFrames(from, now, {
     concurrency: 10,
     onProgress: (d, t) => process.stdout.write(`\r[update] кадры: ${d}/${t}`),
   });
-  if (fetched || cached) process.stdout.write('\n');
+  if (fetched) process.stdout.write('\n');
   log(`кадров с молниями: ${frames.length} (загружено ${fetched}, из кэша ${cached}, не удалось ${failed.length}) за ${Math.round((Date.now() - t0) / 1000)} с`);
-  if (failed.length) log('не загрузились:', failed.slice(0, 5).join('; '), failed.length > 5 ? `…ещё ${failed.length - 5}` : '');
+  if (failed.length) log('не загрузились:', failed.slice(0, 3).join('; '), failed.length > 3 ? `…ещё ${failed.length - 3}` : '');
+  if (skipped) log(`пробелов в данных сервиса (больше не перезапрашиваем): ${skipped}`);
 
   // 2. Проходы гроз над ячейками сетки
   const passes = buildPasses(frames);
@@ -104,7 +105,6 @@ async function main() {
     ready.push({
       id: sp.id,
       forest: sp.forest,
-      forestNamed: sp.forestNamed,
       place: sp.place,
       protectedArea: sp.protectedArea,
       lat: sp.lat,
@@ -139,10 +139,9 @@ async function main() {
       Math.max(0, Math.round((now.getTime() - p.endMs) / 86400_000)),
     ]);
 
-  const lastFrame = frames.length ? frames[frames.length - 1].time : null;
   const payload = {
     generatedAt: new Date().toISOString(),
-    dataThrough: lastFrame || now.toISOString(),
+    dataThrough: latest || now.toISOString(),
     windowFrom: from.toISOString(),
     windowDays: days,
     demo: demo !== null,

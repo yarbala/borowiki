@@ -199,8 +199,11 @@ input[type=range] { accent-color: var(--accent); }
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 110px);
-  max-height: calc(100dvh - 110px);
+  /* 110px в макете — ровно высота колонки круглых кнопок, из-за чего при длинной
+     карточке они доезжали до верха и перекрывали шестерёнку настроек.
+     Оставляем сверху место под пилюлю горизонта и легенду. */
+  max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
@@ -338,8 +341,9 @@ input[type=range] { accent-color: var(--accent); }
 
 .facts div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .facts .k { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
-.facts .v { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
-.facts .v svg { display: block; color: var(--bolt); flex: none; }
+/* Значение может переноситься на две строки — молния должна остаться у первой. */
+.facts .v { font-size: 14px; font-weight: 500; display: flex; align-items: flex-start; gap: 5px; }
+.facts .v svg { display: block; color: var(--bolt); flex: none; margin-top: 3px; }
 
 /* ---------- График за 30 дней ---------- */
 
