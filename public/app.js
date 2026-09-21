@@ -4,12 +4,6 @@ const STORE_KEY = 'borowiki.v1';
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 
-const TILES = {
-  url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
-  opts: { maxZoom: 18 },
-  credit: '© OpenStreetMap',
-};
-
 const $ = (id) => document.getElementById(id);
 
 // ---------- состояние ----------
@@ -33,9 +27,10 @@ const state = {
   settingsOpen: false,
   picking: false,
   home: saved.home || null,
-  radius: saved.radius || 100,
+  radius: saved.radius || 200,
   marks: saved.marks || {},
   located: null,
+  allForests: null,
 };
 
 function persist() {
@@ -103,158 +98,269 @@ function boltSvg(size) {
 }
 
 // ---------- карта ----------
+//
+// Векторные тайлы OpenFreeMap (данные OSM) вместо растровых: лес есть отдельным слоем
+// `landcover` класса `wood`, поэтому все леса видны чётко на любом масштабе,
+// а не только те, над которыми прошла гроза.
 
-let map, footLayer, pinLayer, strikeLayer, homeLayer, outlineLayer;
-const foots = {}, pins = {};
-const forestShapes = [];
+const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+const CREDIT = '© OpenStreetMap';
+
+/** Цвет леса на подложке — заметнее, чем в исходном стиле. */
+const WOOD_COLOR = '#4E9A4E';
+const WOOD_OPACITY = 0.5;
+
+let map, mapReady = false, clickedFeature = false;
+
+/** Выражение MapLibre: оценка выбранного горизонта → цвет шкалы. */
+function colorExpr(prop) {
+  return [
+    'case',
+    ['<', ['get', prop], 25], '#B9B6AD',
+    ['interpolate', ['linear'], ['get', prop],
+      25, '#F5C518',
+      62, '#F5821F',
+      100, '#E5321F'],
+  ];
+}
+
+const scoreProp = () => `score${state.horizon}`;
+
+/**
+ * Размер точки: базовый радиус зависит от оценки, множитель — от масштаба.
+ * `zoom` в MapLibre разрешён только на верхнем уровне interpolate, поэтому
+ * масштабные ступени задаются как выражения от оценки, а не умножением сверху.
+ */
+function radiusExpr(prop, extra = 0) {
+  const base = (k) => ['+', extra + 6 * k, ['*', 7 * k, ['/', ['max', 0, ['get', prop]], 100]]];
+  return ['interpolate', ['linear'], ['zoom'], 6, base(0.35), 9, base(0.65), 11, base(1)];
+}
+
+/** Окружность радиуса km вокруг точки как полигон. */
+function circlePolygon(lat, lon, km, points = 128) {
+  const ring = [];
+  const dLat = km / 110.574;
+  const dLon = km / (111.32 * Math.cos((lat * Math.PI) / 180));
+  for (let i = 0; i <= points; i++) {
+    const a = (i / points) * 2 * Math.PI;
+    ring.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} };
+}
+
+const fc = (features) => ({ type: 'FeatureCollection', features });
+
+function forestsGeoJson() {
+  return fc(
+    (state.data.forests || []).map((f) => ({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [f.ring] },
+      properties: { spotId: f.spotId, score0: f.scores?.[0] ?? -1, score3: f.scores?.[1] ?? -1, score7: f.scores?.[2] ?? -1 },
+    })),
+  );
+}
+
+function spotsGeoJson() {
+  return fc(
+    state.data.spots.map((sp) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [sp.lon, sp.lat] },
+      properties: { id: sp.id, score0: sp.scores[0], score3: sp.scores[1], score7: sp.scores[2] },
+    })),
+  );
+}
+
+function strikesGeoJson() {
+  return fc(
+    (state.data.strikes || []).map(([lat, lon, ago]) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [lon, lat] },
+      properties: { ago },
+    })),
+  );
+}
+
+function homeGeoJson() {
+  const f = [{ type: 'Feature', geometry: { type: 'Point', coordinates: [state.home.lon, state.home.lat] }, properties: { kind: 'home' } }];
+  if (state.located) f.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [state.located[1], state.located[0]] }, properties: { kind: 'me' } });
+  return fc(f);
+}
 
 function initMap() {
-  map = L.map('map', { zoomControl: false, attributionControl: false });
-  L.tileLayer(TILES.url, TILES.opts).addTo(map);
-  // Лес — под пятнами, разряды — над ними: они попадают в те же места,
-  // и снизу их было бы не видно.
-  map.createPane('forest').style.zIndex = 405;
-  map.createPane('spots').style.zIndex = 410;
-  map.createPane('strikes').style.zIndex = 415;
-
-  outlineLayer = L.layerGroup().addTo(map);
-  footLayer = L.layerGroup().addTo(map);
-  pinLayer = L.layerGroup().addTo(map);
-  homeLayer = L.layerGroup().addTo(map);
-
-  // Поворот телефона или изменение окна: Leaflet сам о новом размере не узнает.
-  let resizeTimer;
-  window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => map.invalidateSize(), 150);
+  map = new maplibregl.Map({
+    container: 'map',
+    style: STYLE,
+    center: [state.home.lon, state.home.lat],
+    zoom: 7,
+    attributionControl: false,
+    dragRotate: false,
   });
+  map.touchZoomRotate.disableRotation();
 
-  map.on('click', () => {
-    if (state.picking) return;
-    if (state.sheet !== 'collapsed') setSheet('collapsed', null);
-  });
-  map.on('click', (e) => {
-    if (state.picking) setHome(e.latlng.lat, e.latlng.lng);
-  });
-}
+  // Ссылка на карту в консоли — удобно проверять слои стиля вручную.
+  window.__map = map;
 
-function spotStyle(sp) {
-  const s = sp.scores[hIndex()];
-  const sel = state.selectedId === sp.id;
-  const stale = !!state.stale;
-  const c = rampColor(s);
-  return {
-    foot: { stroke: true, color: c, weight: sel ? 1.5 : 1, opacity: stale ? 0.3 : 0.7, fill: true, fillColor: c, fillOpacity: stale ? 0.08 : 0.2 },
-    pin: {
-      radius: (s < 25 ? 6 : 6 + (s / 100) * 7) + (sel ? 2 : 0),
-      stroke: true,
-      color: sel ? '#1B1B18' : '#FFFFFF',
-      weight: sel ? 2.5 : 2,
-      opacity: 1,
-      fill: true,
-      fillColor: c,
-      fillOpacity: stale ? 0.5 : 1,
-    },
-  };
-}
+  map.on('load', () => {
+    mapReady = true;
 
-/** Цвет и прозрачность залитого леса. Лес без оценки — приглушённый зелёный. */
-function forestStyle(f) {
-  const score = f.scores ? f.scores[hIndex()] : null;
-  return {
-    pane: 'forest',
-    stroke: false,
-    fill: true,
-    // Без обводки: тайлы режут большой лес на куски, и швы между ними были бы видны.
-    fillColor: score == null ? '#4C7A4C' : rampColor(score),
-    fillOpacity: state.stale ? 0.2 : score == null ? 0.3 : 0.55,
-  };
-}
+    // Лес на подложке — заметный, чтобы было видно все массивы, а не только задетые грозой.
+    if (map.getLayer('landcover_wood')) {
+      map.setPaintProperty('landcover_wood', 'fill-color', WOOD_COLOR);
+      map.setPaintProperty('landcover_wood', 'fill-opacity', WOOD_OPACITY);
+      map.setPaintProperty('landcover_wood', 'fill-antialias', true);
+    }
 
-function drawForests() {
-  outlineLayer.clearLayers();
-  forestShapes.length = 0;
-  for (const f of state.data.forests || []) {
-    const poly = L.polygon(f.ring.map(([lon, lat]) => [lat, lon]), forestStyle(f));
-    if (f.spotId) poly.on('click', (e) => {
-      L.DomEvent.stopPropagation(e);
-      if (state.picking) setHome(e.latlng.lat, e.latlng.lng);
-      else selectSpot(f.spotId);
+    // Свои слои — под подписями, чтобы названия городов оставались читаемыми.
+    const labels = map.getStyle().layers.find((l) => l.type === 'symbol');
+    const before = labels ? labels.id : undefined;
+
+    // Все леса региона одним слоем: в тайлах лес появляется только с большого
+    // приближения, а нужно видеть весь радиус сразу.
+    if (state.allForests) {
+      map.addSource('all-forests', { type: 'geojson', data: state.allForests });
+      map.addLayer({
+        id: 'all-forests',
+        type: 'fill',
+        source: 'all-forests',
+        // Только для обзора: с z8 лес приходит из самих векторных тайлов, во всех подробностях.
+        maxzoom: 9,
+        // Без сглаживания краёв: контуры приходят нарезанными по тайлам, и общие
+        // границы кусков иначе проступают сеткой.
+        paint: { 'fill-color': WOOD_COLOR, 'fill-opacity': WOOD_OPACITY, 'fill-antialias': false },
+      }, before);
+    }
+
+    map.addSource('strikes', { type: 'geojson', data: strikesGeoJson() });
+    map.addLayer({
+      id: 'strikes',
+      type: 'circle',
+      source: 'strikes',
+      layout: { visibility: state.storms ? 'visible' : 'none' },
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 1.6, 9, 3, 13, 6],
+        'circle-color': '#6B4EE6',
+        'circle-opacity': ['max', 0.25, ['-', 0.75, ['/', ['get', 'ago'], 12]]],
+      },
+    }, before);
+
+    map.addSource('storm-forests', { type: 'geojson', data: forestsGeoJson() });
+    map.addLayer({
+      id: 'storm-forests',
+      type: 'fill',
+      source: 'storm-forests',
+      paint: { 'fill-color': colorExpr(scoreProp()), 'fill-opacity': 0.75, 'fill-antialias': true },
+    }, before);
+
+    map.addSource('home', { type: 'geojson', data: homeGeoJson() });
+    map.addSource('ring', { type: 'geojson', data: fc([circlePolygon(state.home.lat, state.home.lon, state.radius)]) });
+    map.addLayer({
+      id: 'ring',
+      type: 'line',
+      source: 'ring',
+      paint: { 'line-color': '#161616', 'line-width': 1, 'line-opacity': 0.45, 'line-dasharray': [4, 7] },
+    }, before);
+
+    map.addSource('spots', { type: 'geojson', data: spotsGeoJson() });
+    map.addLayer({
+      id: 'spots',
+      type: 'circle',
+      source: 'spots',
+      paint: {
+        // На обзоре точек сотни: мелкие, чтобы не закрывать лес; при приближении крупнее.
+        'circle-radius': radiusExpr(scoreProp()),
+        'circle-color': colorExpr(scoreProp()),
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 6, 0.6, 10, 2],
+      },
+    }, before);
+
+    map.addLayer({
+      id: 'spot-selected',
+      type: 'circle',
+      source: 'spots',
+      filter: ['==', ['get', 'id'], ''],
+      paint: {
+        'circle-radius': ['+', 8, ['*', 7, ['/', ['max', 0, ['get', scoreProp()]], 100]]],
+        'circle-color': colorExpr(scoreProp()),
+        'circle-stroke-color': '#1B1B18',
+        'circle-stroke-width': 2.5,
+      },
+    }, before);
+
+    map.addLayer({
+      id: 'home',
+      type: 'circle',
+      source: 'home',
+      paint: {
+        'circle-radius': ['case', ['==', ['get', 'kind'], 'me'], 7, 6],
+        'circle-color': ['case', ['==', ['get', 'kind'], 'me'], '#2B5FB3', '#161616'],
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-width': 2.5,
+      },
+    }, before);
+
+    for (const layer of ['spots', 'storm-forests']) {
+      map.on('click', layer, (e) => {
+        if (state.picking) return;
+        const f = e.features?.[0];
+        const id = f?.properties?.id || f?.properties?.spotId;
+        if (!id) return;
+        clickedFeature = true;
+        selectSpot(id);
+      });
+      map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    }
+
+    map.on('click', (e) => {
+      if (state.picking) { setHome(e.lngLat.lat, e.lngLat.lng); return; }
+      if (clickedFeature) { clickedFeature = false; return; }
+      if (state.sheet !== 'collapsed') setSheet('collapsed', null);
     });
-    poly.addTo(outlineLayer);
-    forestShapes.push({ f, poly });
-  }
+
+    fitHome();
+    render();
+  });
+}
+
+/** Перекрашивание при смене горизонта: выражения ссылаются на другое поле. */
+function restyle() {
+  if (!mapReady) return;
+  const prop = scoreProp();
+  map.setPaintProperty('storm-forests', 'fill-color', colorExpr(prop));
+  map.setPaintProperty('spots', 'circle-color', colorExpr(prop));
+  map.setPaintProperty('spots', 'circle-radius', radiusExpr(prop));
+  map.setPaintProperty('spot-selected', 'circle-color', colorExpr(prop));
+  map.setPaintProperty('spot-selected', 'circle-radius', ['+', 8, ['*', 7, ['/', ['max', 0, ['get', prop]], 100]]]);
+  map.setFilter('spot-selected', ['==', ['get', 'id'], state.selectedId || '']);
+  const stale = state.stale ? 0.35 : 0.75;
+  map.setPaintProperty('storm-forests', 'fill-opacity', stale);
 }
 
 function drawSpots() {
-  footLayer.clearLayers();
-  pinLayer.clearLayers();
-  for (const k of Object.keys(foots)) delete foots[k];
-  for (const k of Object.keys(pins)) delete pins[k];
-
-  for (const sp of state.data.spots) {
-    const st = spotStyle(sp);
-    const onClick = (e) => {
-      L.DomEvent.stopPropagation(e);
-      if (state.picking) setHome(e.latlng.lat, e.latlng.lng);
-      else selectSpot(sp.id);
-    };
-
-    pins[sp.id] = L.circleMarker([sp.lat, sp.lon], { pane: 'spots', bubblingMouseEvents: false, ...st.pin })
-      .on('click', onClick)
-      .addTo(pinLayer);
-  }
-
-  const strikes = state.data.strikes || [];
-  const canvas = L.canvas({ padding: 0.5, pane: 'strikes' });
-  strikeLayer = L.layerGroup(
-    strikes.map(([lat, lon, ago]) =>
-      L.circleMarker([lat, lon], {
-        renderer: canvas,
-        pane: 'strikes',
-        radius: 2.6,
-        stroke: false,
-        fillColor: '#6B4EE6',
-        fillOpacity: Math.max(0.3, 1 - ago / 8),
-        interactive: false,
-      }),
-    ),
-  );
-  if (state.storms) strikeLayer.addTo(map);
-}
-
-function restyle() {
-  for (const { f, poly } of forestShapes) poly.setStyle(forestStyle(f));
-  for (const sp of state.data.spots) {
-    const st = spotStyle(sp);
-    foots[sp.id]?.setStyle(st.foot);
-    if (pins[sp.id]) {
-      pins[sp.id].setStyle(st.pin);
-      pins[sp.id].setRadius(st.pin.radius);
-    }
-  }
-  pins[state.selectedId]?.bringToFront();
+  if (!mapReady) return;
+  map.getSource('spots').setData(spotsGeoJson());
+  map.getSource('storm-forests').setData(forestsGeoJson());
+  map.getSource('strikes').setData(strikesGeoJson());
 }
 
 function drawHome() {
-  homeLayer.clearLayers();
-  const { home, radius, located } = state;
-  L.circle([home.lat, home.lon], {
-    radius: radius * 1000, fill: false, color: '#161616', weight: 1, opacity: 0.45, dashArray: '4 7', interactive: false,
-  }).addTo(homeLayer);
-  L.circleMarker([home.lat, home.lon], {
-    radius: 6, color: '#FFFFFF', weight: 2.5, fillColor: '#161616', fillOpacity: 1, interactive: false,
-  }).addTo(homeLayer);
-  if (located) {
-    L.circleMarker(located, { radius: 7, color: '#FFFFFF', weight: 2.5, fillColor: '#2B5FB3', fillOpacity: 1, interactive: false }).addTo(homeLayer);
-  }
+  if (!mapReady) return;
+  map.getSource('home').setData(homeGeoJson());
+  map.getSource('ring').setData(fc([circlePolygon(state.home.lat, state.home.lon, state.radius)]));
+}
+
+function bounds(lat, lon, km) {
+  const dLat = km / 110.574;
+  const dLon = km / (111.32 * Math.cos((lat * Math.PI) / 180));
+  return [[lon - dLon, lat - dLat], [lon + dLon, lat + dLat]];
 }
 
 function fitHome() {
-  const size = map.getSize();
-  map.fitBounds(L.latLng(state.home.lat, state.home.lon).toBounds(state.radius * 2000), {
-    paddingTopLeft: [16, Math.min(110, size.y * 0.18)],
-    paddingBottomRight: [16, Math.min(150, size.y * 0.25)],
+  if (!mapReady) return;
+  const h = window.innerHeight;
+  map.fitBounds(bounds(state.home.lat, state.home.lon, state.radius), {
+    padding: { top: Math.min(110, h * 0.18), bottom: Math.min(150, h * 0.25), left: 16, right: 16 },
     animate: false,
   });
 }
@@ -265,13 +371,12 @@ function selectSpot(id) {
   state.settingsOpen = false;
   render();
   const sp = state.data.spots.find((s) => s.id === id);
-  if (!sp) return;
-  const size = map.getSize();
-  map.flyToBounds(L.latLng(sp.lat, sp.lon).toBounds(Math.max(sp.radiusM, 1500) * 5), {
-    paddingTopLeft: [24, Math.min(110, size.y * 0.15)],
-    paddingBottomRight: [24, Math.min(460, size.y * 0.58)],
+  if (!sp || !mapReady) return;
+  const h = window.innerHeight;
+  map.fitBounds(bounds(sp.lat, sp.lon, Math.max(sp.radiusM, 2000) / 1000 * 2.5), {
+    padding: { top: Math.min(110, h * 0.15), bottom: Math.min(460, h * 0.58), left: 24, right: 24 },
     maxZoom: 13,
-    duration: 0.8,
+    duration: 800,
   });
 }
 
@@ -545,7 +650,7 @@ function renderStatus() {
       ? `Данные не обновлялись ${Math.round(hours)} ч · последний кадр ${hhmm}`
       : `Молнии MTG · леса OSM · данные по ${hhmm}`;
   status.classList.toggle('stale', state.stale);
-  $('credit').textContent = TILES.credit;
+  $('credit').textContent = CREDIT;
 }
 
 function render() {
@@ -619,19 +724,18 @@ function wire() {
   $('sheetHandle').onclick = () => setSheet(state.sheet === 'list' ? 'collapsed' : 'list', null);
   $('stormBtn').onclick = () => {
     state.storms = !state.storms;
-    if (state.storms) strikeLayer.addTo(map);
-    else map.removeLayer(strikeLayer);
+    if (mapReady) map.setLayoutProperty('strikes', 'visibility', state.storms ? 'visible' : 'none');
     render();
   };
   $('locateBtn').onclick = () => {
-    const fly = (ll) => map.flyTo(ll, 11, { duration: 0.8 });
-    const fallback = () => fly([state.home.lat, state.home.lon]);
+    const fly = (lat, lon) => map.flyTo({ center: [lon, lat], zoom: 11, duration: 800 });
+    const fallback = () => fly(state.home.lat, state.home.lon);
     if (!navigator.geolocation) return fallback();
     navigator.geolocation.getCurrentPosition(
       (p) => {
         state.located = [p.coords.latitude, p.coords.longitude];
         drawHome();
-        fly(state.located);
+        fly(p.coords.latitude, p.coords.longitude);
       },
       fallback,
       { timeout: 5000, maximumAge: 60000 },
@@ -667,6 +771,11 @@ async function boot() {
   state.stale = !state.data.demo && (Date.now() - new Date(state.data.generatedAt).getTime()) / 3600e3 > 3;
 
   try {
+    const res = await fetch('./data/forests.json', { cache: 'force-cache' });
+    if (res.ok) state.allForests = await res.json();
+  } catch {}
+
+  try {
     const finds = await fetch('/api/finds').then((r) => (r.ok ? r.json() : null));
     if (finds && typeof finds === 'object') state.marks = { ...finds, ...state.marks };
   } catch {}
@@ -675,10 +784,6 @@ async function boot() {
   $('homeLabel').value = state.home.label;
 
   initMap();
-  drawForests();
-  drawSpots();
-  drawHome();
-  fitHome();
   wire();
   render();
 

@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.mjs",
     "update": "node scripts/update.mjs",
-    "update:demo": "node scripts/update.mjs --demo"
+    "update:demo": "node scripts/update.mjs --demo",
+    "forests": "node scripts/build-forests.mjs"
   },
   "engines": {
     "node": ">=20"
