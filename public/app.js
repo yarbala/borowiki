@@ -67,6 +67,8 @@ const state = {
   historyOpen: false,
   historyDates: [],
   historyBusy: null,
+  // Дата, которую сервер сейчас собирает по нашему запросу.
+  building: null,
 };
 
 function persist() {
@@ -92,6 +94,11 @@ function distKm(home, lat, lon) {
 
 /** Название уже может содержать деревню («Лес у Pokój») — тогда не повторяем её. */
 const placePrefix = (sp) => (sp.place && !sp.forest.includes(sp.place) ? `у ${sp.place} · ` : '');
+
+/** Полная подпись даты — для строки состояния и панели истории. */
+const dateLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+/** Короткая — для плашки вверху, где мало места. */
+const dateShort = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
 
 const el = (tag, props = {}, ...kids) => {
   const n = Object.assign(document.createElement(tag), props);
@@ -656,8 +663,7 @@ function renderStatus() {
   const hhmm = new Date(d.dataThrough).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
   if (state.asOf) {
-    const label = new Date(state.asOf + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-    $('statusText').textContent = `История: состояние на ${label}`;
+    $('statusText').textContent = `История: состояние на ${dateLabel(state.asOf)}`;
     $('status').classList.remove('stale');
     $('credit').textContent = CREDIT;
     return;
@@ -684,6 +690,21 @@ function render() {
 
   if (state.sheet === 'list') renderList(top);
   if (state.sheet === 'card') renderCard();
+
+  // Какая дата на экране — видно постоянно, а не только в строке состояния внизу.
+  const badge = $('dateBadge');
+  if (state.building) {
+    badge.hidden = false;
+    badge.classList.add('building');
+    $('dateBadgeText').textContent = `Собираем ${dateShort(state.building)}…`;
+  } else if (state.asOf) {
+    badge.hidden = false;
+    badge.classList.remove('building');
+    $('dateBadgeText').textContent = dateShort(state.asOf);
+  } else {
+    badge.hidden = true;
+  }
+  $('dateBadgeClose').hidden = !!state.building;
 
   $('history').hidden = !state.historyOpen;
   $('historyBtn').setAttribute('aria-pressed', String(!!state.asOf));
@@ -776,6 +797,14 @@ function wire() {
     render();
   };
 
+  $('dateBadgeClose').onclick = async () => {
+    try {
+      await loadDataset(null);
+      render();
+      fitHome();
+    } catch {}
+  };
+
   $('historyBtn').onclick = () => {
     state.historyOpen = true;
     state.settingsOpen = false;
@@ -805,15 +834,13 @@ function wire() {
         fitHome();
         return;
       }
-      note.textContent = `Собираем ${date} — около 7 минут. Окно можно закрыть, снимок появится в списке.`;
-      // Ждём готовности, не блокируя интерфейс.
-      const poll = setInterval(async () => {
-        await refreshHistoryList();
-        if (state.historyDates.includes(date)) {
-          clearInterval(poll);
-          note.textContent = `Снимок на ${date} готов — выберите его в списке.`;
-        }
-      }, 15000);
+      if (j.building && j.building !== date) {
+        note.textContent = `Сейчас собирается ${dateLabel(j.building)} — дождитесь окончания.`;
+        return;
+      }
+      state.historyOpen = false;
+      note.textContent = `Собираем ${dateLabel(date)} — около 7 минут.`;
+      watchBuild(date);
     } catch (e) {
       note.textContent = `Не получилось: ${e.message}`;
     }
@@ -821,6 +848,7 @@ function wire() {
 
   $('backToToday').onclick = async () => {
     try {
+      state.building = null;
       await loadDataset(null);
       state.historyOpen = false;
       render();
@@ -873,6 +901,33 @@ async function loadDataset(date) {
   render();
 }
 
+/** Ждёт готовности снимка и открывает его. Работает и после перезагрузки страницы. */
+function watchBuild(date) {
+  state.building = date;
+  render();
+  const poll = setInterval(async () => {
+    await refreshHistoryList();
+    if (state.historyDates.includes(date)) {
+      clearInterval(poll);
+      state.building = null;
+      try {
+        await loadDataset(date);
+        render();
+        fitHome();
+      } catch (e) {
+        state.building = null;
+        $('historyNote').textContent = e.message;
+        render();
+      }
+    } else if (!state.historyBusy) {
+      // Сборка оборвалась — снимаем плашку, чтобы она не висела вечно.
+      clearInterval(poll);
+      state.building = null;
+      render();
+    }
+  }, 15000);
+}
+
 async function refreshHistoryList() {
   try {
     const r = await fetch('/api/history', { cache: 'no-store' });
@@ -903,7 +958,7 @@ function renderHistory() {
     box.append(b);
   }
   if (state.historyBusy) {
-    $('historyNote').textContent = `Собираем ${state.historyBusy} — это около 7 минут. Можно закрыть окно, снимок появится в списке.`;
+    $('historyNote').textContent = `Собираем ${dateLabel(state.historyBusy)} — это около 7 минут. Можно закрыть окно, снимок появится сам.`;
   }
 }
 
@@ -937,6 +992,15 @@ async function boot() {
   initMap();
   wire();
   render();
+
+  // Если сборка снимка шла до перезагрузки, продолжаем её ждать.
+  try {
+    const r = await fetch('/api/history', { cache: 'no-store' });
+    const j = await r.json();
+    state.historyDates = j.dates || [];
+    state.historyBusy = j.building || null;
+    if (j.building) watchBuild(j.building);
+  } catch {}
 
   if (problem) {
     $('statusText').textContent = `Нет данных: ${problem}. Запустите npm run update`;

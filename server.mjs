@@ -43,26 +43,25 @@ async function writeFinds(data) {
 
 // ---------- обновление данных ----------
 
-let updating = false;
+/**
+ * Текущая сборка: {child, date} или null. Дата и процесс хранятся вместе —
+ * иначе обработчик выхода одного процесса стирал состояние другого.
+ */
+let running = null;
 
-/** Дата, которую сейчас собираем для режима истории, либо null. */
-let buildingDate = null;
+const buildingDate = () => running?.date || null;
 
-function runUpdate(reason, args = []) {
-  if (updating) return false;
-  updating = true;
+function runUpdate(reason, args = [], date = null) {
+  if (running) return false;
   console.log(`[update] старт (${reason})`);
   const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], { stdio: 'inherit' });
-  child.on('exit', (code) => {
-    updating = false;
-    buildingDate = null;
-    console.log(`[update] завершено с кодом ${code}`);
-  });
-  child.on('error', (e) => {
-    updating = false;
-    buildingDate = null;
-    console.error('[update] не запустилось:', e.message);
-  });
+  running = { child, date };
+  const done = (msg) => {
+    if (running?.child === child) running = null;
+    console.log(`[update] ${msg}`);
+  };
+  child.on('exit', (code) => done(`завершено с кодом ${code}`));
+  child.on('error', (e) => done(`не запустилось: ${e.message}`));
   return true;
 }
 
@@ -149,7 +148,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/history') {
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': MIME['.json'] })
-        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate }));
+        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate() }));
       return;
     }
     if (req.method === 'POST') {
@@ -164,13 +163,12 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ ready: true }));
             return;
           }
-          if (buildingDate) {
-            res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ building: buildingDate }));
+          if (running) {
+            res.writeHead(200, { 'content-type': MIME['.json'] })
+              .end(JSON.stringify({ building: buildingDate(), busy: !buildingDate() }));
             return;
           }
-          buildingDate = date;
-          if (!runUpdate(`история на ${date}`, [`--date=${date}`])) {
-            buildingDate = null;
+          if (!runUpdate(`история на ${date}`, [`--date=${date}`], date)) {
             throw new Error('сейчас идёт другое обновление, попробуйте через минуту');
           }
           res.writeHead(202, { 'content-type': MIME['.json'] }).end(JSON.stringify({ building: date }));
