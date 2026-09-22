@@ -1,6 +1,19 @@
 {
   "active": "wroclaw",
   "regions": [
-    { "slug": "wroclaw", "label": "Вроцлав", "lat": 51.1079, "lon": 17.0385, "radiusKm": 200 }
+    {
+      "slug": "wroclaw",
+      "label": "Вроцлав",
+      "lat": 51.1079,
+      "lon": 17.0385,
+      "radiusKm": 200
+    },
+    {
+      "slug": "minsk",
+      "label": "Минск",
+      "lat": 53.9025,
+      "lon": 27.5618,
+      "radiusKm": 200
+    }
   ]
 }

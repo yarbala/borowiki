@@ -197,6 +197,27 @@ function boltSvg(size, color) {
   return s;
 }
 
+/** Капля и солнце — значки прогноза в карточке. */
+function dropSvg(size, color) {
+  const s = svgEl('svg', { width: size, height: size, viewBox: '0 0 12 12' });
+  s.append(svgEl('path', { d: 'M6 1.2C6 1.2 2.4 5.2 2.4 7.4a3.6 3.6 0 0 0 7.2 0C9.6 5.2 6 1.2 6 1.2z', fill: color || 'currentColor' }));
+  return s;
+}
+
+function sunSvg(size, color) {
+  const s = svgEl('svg', { width: size, height: size, viewBox: '0 0 12 12' });
+  s.append(svgEl('circle', { cx: 6, cy: 6, r: 2.6, fill: color || 'currentColor' }));
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    s.append(svgEl('line', {
+      x1: (6 + Math.cos(a) * 4).toFixed(2), y1: (6 + Math.sin(a) * 4).toFixed(2),
+      x2: (6 + Math.cos(a) * 5.2).toFixed(2), y2: (6 + Math.sin(a) * 5.2).toFixed(2),
+      stroke: color || 'currentColor', 'stroke-width': 1.1, 'stroke-linecap': 'round',
+    }));
+  }
+  return s;
+}
+
 // ---------- карта ----------
 //
 // Векторные тайлы OpenFreeMap (данные OSM): лес есть отдельным слоем и виден
@@ -746,6 +767,48 @@ function renderChart(sp) {
   return wrap;
 }
 
+const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+/**
+ * Прогноз на три дня вперёд. Это единственное место в приложении, где показано
+ * не измеренное, — поэтому оно отделено чертой и подписано «ожидается».
+ * Данные приходят от той же службы погоды в том же ответе, что и прошлое.
+ */
+function renderForecast(sp) {
+  const days = sp.forecast || [];
+  if (!days.length) return null;
+
+  const wrap = el('div', { className: 'forecast' });
+  wrap.append(el('div', { className: 'forecast-head' },
+    el('span', { className: 'fh-title', textContent: 'Ожидается' }),
+    el('span', { className: 'fh-note', textContent: 'прогноз, не измерение' })));
+
+  const row = el('div', { className: 'forecast-days' });
+  for (const d of days) {
+    const storm = d.code >= 95;
+    const rainy = !storm && d.rainMm >= 1;
+    const date = new Date(`${d.date}T12:00:00`);
+    const box = el('div', { className: `fday${storm ? ' storm' : ''}` },
+      el('span', { className: 'fd-date', textContent: `${WEEKDAYS[date.getDay()]} ${date.getDate()}` }),
+      el('span', { className: 'fd-icon' }, storm ? boltSvg(18, '#6B4EE6') : rainy ? dropSvg(16, '#3E79C9') : sunSvg(16, '#C9A227')),
+      el('span', { className: 'fd-mm', textContent: d.rainMm > 0 ? `${d.rainMm} мм` : 'сухо' }),
+      el('span', { className: 'fd-t', textContent: `${d.tMax}°` }));
+    row.append(box);
+  }
+  wrap.append(row);
+
+  // Новая гроза над тем же лесом сбивает отсчёт: ехать надо от неё, а не от прошлой.
+  const nextStorm = days.find((d) => d.code >= 95);
+  if (nextStorm) {
+    const date = new Date(`${nextStorm.date}T12:00:00`);
+    wrap.append(el('div', {
+      className: 'forecast-tip',
+      textContent: `Если гроза ${date.getDate()} ${MONTHS[date.getMonth()]} случится, ваши 2–4 дня пойдут от неё.`,
+    }));
+  }
+  return wrap;
+}
+
 function renderCard() {
   const box = $('card');
   box.textContent = '';
@@ -814,7 +877,7 @@ function renderCard() {
     }));
   }
 
-  box.append(renderChart(sp), actions);
+  box.append(renderChart(sp), renderForecast(sp), actions);
 
   if (mk) {
     const row = el('div', { className: 'markrow' },

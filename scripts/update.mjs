@@ -166,6 +166,8 @@ async function main() {
       sinceRainText: a.sinceStormMm > 0 ? `${a.sinceStormMm} мм` : 'сухо',
       tempText: a.tempRange ? `днём ${a.tempRange[0]}–${a.tempRange[1]} °C` : '—',
       chart: a.chart,
+      // В снимке истории «завтра» давно прошло — прогноз там был бы обманом.
+      forecast: asOf || demo !== null ? null : a.forecast,
     });
   }
 
