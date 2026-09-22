@@ -89,6 +89,11 @@ const state = {
   // Что сервер делает прямо сейчас и когда начал — чтобы показывать ход работы.
   progress: null,
   buildStartedAt: null,
+  // Загрузка страницы и фоновое обновление данных сервером.
+  loading: true,
+  loadingText: 'загружаю данные…',
+  updating: false,
+  serverProgress: null,
 };
 
 function persist() {
@@ -192,7 +197,8 @@ function boltSvg(size, color) {
 // на любом масштабе. Для обзора (z≤9) слой леса собран заранее в forests.json.
 
 const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
-const CREDIT = '© OpenStreetMap';
+/** Коротко: на экране телефона полная подпись съедает строку состояния. */
+const CREDIT = '© OSM';
 const WOOD_COLOR = '#4E9A4E';
 const WOOD_OPACITY = 0.5;
 
@@ -814,26 +820,67 @@ function renderCard() {
   }
 }
 
-function renderStatus() {
-  const d = state.data;
-  const hours = (Date.now() - new Date(d.generatedAt).getTime()) / 3600e3;
-  state.stale = !d.demo && hours > 3;
-  const hhmm = new Date(d.dataThrough).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+/** «только что», «5 минут назад», «2 часа назад» — для строки состояния. */
+function humanAgo(ms) {
+  const min = Math.floor(ms / 60_000);
+  if (min < 2) return 'только что';
+  if (min < 60) return `${min} ${plural(min, ['минуту', 'минуты', 'минут'])} назад`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} ${plural(h, ['час', 'часа', 'часов'])} назад`;
+  const d = Math.floor(h / 24);
+  return `${d} ${plural(d, ['день', 'дня', 'дней'])} назад`;
+}
 
-  if (state.asOf) {
-    $('statusText').textContent = `История: состояние на ${dateLabel(state.asOf)}`;
-    $('status').classList.remove('stale');
-    $('credit').textContent = CREDIT;
+/**
+ * Строка внизу — единственное место, где всегда видно состояние данных:
+ * грузятся, обновляются, или загружены и когда собраны.
+ */
+function renderStatus() {
+  const box = $('status');
+  const text = $('statusText');
+  const btn = $('refreshBtn');
+  box.classList.remove('stale', 'busy', 'ok');
+  $('credit').textContent = CREDIT;
+
+  if (state.loading) {
+    box.classList.add('busy');
+    text.textContent = state.loadingText || 'загружаю данные…';
+    btn.disabled = true;
+    btn.classList.add('spinning');
     return;
   }
 
-  $('statusText').textContent = d.demo
-    ? `Демо-неделя ${d.demoLabel} · молнии MTG · леса OSM`
-    : state.stale
-      ? `Данные не обновлялись ${Math.round(hours)} ч · последний кадр ${hhmm}`
-      : `Молнии MTG · леса OSM · данные по ${hhmm}`;
-  $('status').classList.toggle('stale', state.stale);
-  $('credit').textContent = CREDIT;
+  if (state.updating || state.building) {
+    box.classList.add('busy');
+    const what = state.building ? `собираю ${dateShort(state.building)}` : 'обновляю данные';
+    text.textContent = state.serverProgress ? `${what} · ${state.serverProgress}` : `${what}…`;
+    btn.disabled = true;
+    btn.classList.add('spinning');
+    return;
+  }
+
+  btn.disabled = false;
+  btn.classList.remove('spinning');
+
+  const d = state.data;
+  const count = `${d.spots.length} ${plural(d.spots.length, ['место', 'места', 'мест'])}`;
+
+  if (state.asOf) {
+    text.textContent = `снимок на ${dateLabel(state.asOf)} · ${count}`;
+    return;
+  }
+
+  if (d.demo) {
+    text.textContent = `демо-неделя ${d.demoLabel} · ${count}`;
+    return;
+  }
+
+  const age = Date.now() - new Date(d.generatedAt).getTime();
+  state.stale = age > 3 * 3600e3;
+  box.classList.add(state.stale ? 'stale' : 'ok');
+  text.textContent = state.stale
+    ? `собрано ${humanAgo(age)} — обновите`
+    : `загружено · ${count} · ${humanAgo(age)}`;
 }
 
 function render() {
@@ -1078,6 +1125,21 @@ function wire() {
     }
   };
 
+  $('refreshBtn').onclick = async () => {
+    state.updating = true;
+    state.serverProgress = null;
+    renderStatus();
+    try {
+      await fetch('/api/update', { method: 'POST' });
+      showHint('Пересобираю данные за последние 7 дней — это несколько минут');
+      document.dispatchEvent(new Event('borowiki:poll'));
+    } catch {
+      state.updating = false;
+      showHint('Сервер не ответил — запущен ли npm start?');
+      renderStatus();
+    }
+  };
+
   $('locateBtn').onclick = () => {
     const fly = (lat, lon) => map.flyTo({ center: [lon, lat], zoom: 11, duration: 800 });
     const fallback = () => fly(state.home.lat, state.home.lon);
@@ -1167,6 +1229,45 @@ function watchBuild(date) {
   }, 5000);
 }
 
+/**
+ * Опрос сервера: идёт ли пересборка и не появились ли свежие данные.
+ * Без него открытая страница жила со снимком, прочитанным при загрузке, и
+ * ежечасное обновление проходило мимо неё незаметно.
+ */
+function startStatusPoll() {
+  let timer = null;
+  const tick = async () => {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      const j = await r.json();
+      const wasUpdating = state.updating;
+      state.updating = !!j.updating;
+      state.serverProgress = j.progress || null;
+
+      // Сборку могли запустить с телефона или из другой вкладки — показываем и её.
+      if (j.building && !state.buildPoll) watchBuild(j.building);
+
+      // Сервер пересобрал данные — подхватываем их сами, без перезагрузки страницы.
+      const fresher = j.generatedAt && state.data?.generatedAt && j.generatedAt > state.data.generatedAt;
+      if (!state.asOf && fresher && !j.updating) {
+        await loadDataset(null);
+        showHint(`Данные обновились: ${j.spots} ${plural(j.spots, ['место', 'места', 'мест'])}`);
+      } else if (wasUpdating && !state.updating) {
+        render();
+      } else {
+        renderStatus();
+      }
+    } catch {}
+
+    // Пока работа идёт — спрашиваем часто, чтобы ход был виден; в покое реже.
+    clearTimeout(timer);
+    timer = setTimeout(tick, state.updating || state.building ? 4000 : 30_000);
+  };
+  tick();
+  // Нажали «Обновить» — сразу переходим к частому опросу, не дожидаясь очереди.
+  document.addEventListener('borowiki:poll', () => { clearTimeout(timer); tick(); });
+}
+
 async function refreshHistoryList() {
   try {
     const r = await fetch('/api/history', { cache: 'no-store' });
@@ -1206,6 +1307,12 @@ function renderHistory() {
 
 async function boot() {
   let problem = null;
+  // Страница тянет почти четыре мегабайта; без этой строки первые секунды
+  // выглядят как пустая карта в неработающем приложении.
+  state.loading = true;
+  state.loadingText = 'загружаю грозы…';
+  renderStatus();
+
   try {
     const res = await fetch('./data/spots.json', { cache: 'no-store' });
     if (!res.ok) throw new Error(res.status === 404 ? 'данные ещё не собраны' : `HTTP ${res.status}`);
@@ -1220,6 +1327,9 @@ async function boot() {
 
   // Без force-cache: сервер отдаёт файл с проверкой свежести, и обновлённый после
   // `npm run region` слой лесов теперь подхватывается, а не берётся из кэша навсегда.
+  state.loadingText = 'загружаю леса…';
+  renderStatus();
+
   try {
     const res = await fetch('./data/forests.json');
     if (res.ok) state.allForests = await res.json();
@@ -1243,9 +1353,12 @@ async function boot() {
   $('historyDate').min = earliestDate();
   $('historyDate').max = isoDay(new Date());
 
+  state.loadingText = 'рисую карту…';
   initMap();
   wire();
+  state.loading = false;
   render();
+  startStatusPoll();
 
   // Если сборка снимка шла до перезагрузки, продолжаем её ждать.
   try {

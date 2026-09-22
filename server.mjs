@@ -113,6 +113,26 @@ async function historyDates() {
   }
 }
 
+/**
+ * Состояние данных для строки в браузере. Файл на 900 КБ разбираем только когда
+ * он изменился, иначе опрос раз в полминуты читал бы его впустую.
+ */
+let dataInfo = { mtimeMs: 0, generatedAt: null, spots: 0 };
+
+async function currentData() {
+  const file = path.join(PUBLIC, 'data', 'spots.json');
+  try {
+    const st = await fs.stat(file);
+    if (st.mtimeMs !== dataInfo.mtimeMs) {
+      const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+      dataInfo = { mtimeMs: st.mtimeMs, generatedAt: raw.generatedAt, spots: raw.spots?.length || 0 };
+    }
+  } catch {
+    dataInfo = { mtimeMs: 0, generatedAt: null, spots: 0 };
+  }
+  return dataInfo;
+}
+
 async function dataAgeMs() {
   try {
     const raw = JSON.parse(await fs.readFile(path.join(PUBLIC, 'data', 'spots.json'), 'utf8'));
@@ -230,6 +250,22 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+  }
+
+  // Состояние для строки «данные загружены / обновляются»: страница спрашивает
+  // раз в полминуты и сама подхватывает свежие данные, когда сервер их пересобрал.
+  if (pathname === '/api/status' && req.method === 'GET') {
+    const info = await currentData();
+    res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({
+      generatedAt: info.generatedAt,
+      spots: info.spots,
+      updating: !!running && !buildingDate(),
+      building: buildingDate(),
+      progress: running?.progress || null,
+      startedAt: running?.startedAt || null,
+      lastRun,
+    }));
+    return;
   }
 
   // Отмена сборки: снимок пишется через переименование, поэтому прерванная
