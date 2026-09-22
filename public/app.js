@@ -24,6 +24,13 @@ const AGE_RAMP = [
   [168, '#B9B6AD'],  // неделя
 ];
 
+/** Прогноз гроз — сиреневая шкала по дням: завтра насыщенно, третий день бледно. */
+const FORECAST_RAMP = [
+  [1, '#6B4EE6'],
+  [2, '#9A85EE'],
+  [3, '#C7BCF4'],
+];
+
 /** Дождь — своя шкала свежести, синяя: чем ближе к дате, тем насыщеннее. */
 const RAIN_RAMP = [
   [0, '#0E3C8C'],
@@ -100,8 +107,12 @@ const state = {
   // Области данных: их может быть несколько, активная показана на карте.
   regions: [],
   addingSlug: null,
-  // Режим «прогноз по нажатию»: работает в любой точке, не только там, где была гроза.
+  // Прогноз: слой «где ждут грозу» и режим «спросить про точку». Данные для слоя
+  // запрашиваются по нажатию кнопки и в обычной сборке не участвуют.
   forecasting: false,
+  forecastCells: null,
+  forecastAt: null,
+  forecastLoading: false,
 };
 
 function persist() {
@@ -336,6 +347,14 @@ function rainGeoJson() {
   })));
 }
 
+/** Где ожидается гроза: данные приходят по нажатию кнопки, а не с обновлением. */
+const forecastGeoJson = () =>
+  fc((state.forecastCells || []).map(([lat, lon, day, mm]) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [lon, lat] },
+    properties: { day, mm },
+  })));
+
 const strikesGeoJson = () => {
   const strikes = state.data.strikes || [];
   // Когда-то давность разряда была в сутках, теперь в часах. В файлах без номера
@@ -364,8 +383,9 @@ function initMap() {
     dragRotate: false,
   });
   map.touchZoomRotate.disableRotation();
-  // Ссылка на карту в консоли — удобно проверять слои стиля вручную.
+  // Ссылки в консоли — удобно проверять слои и состояние вручную.
   window.__map = map;
+  window.__state = state;
 
   map.on('load', () => {
     mapReady = true;
@@ -421,6 +441,45 @@ function initMap() {
         'icon-ignore-placement': true,
       },
     }, before);
+
+    // Прогноз гроз — сиреневым, пунктирной обводкой: это ожидание, а не измерение.
+    map.addSource('forecast', { type: 'geojson', data: forecastGeoJson() });
+    map.addLayer({
+      id: 'forecast',
+      type: 'circle',
+      source: 'forecast',
+      layout: { visibility: 'none' },
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 7, 9, 11, 12, 15],
+        'circle-color': ['interpolate', ['linear'], ['get', 'day'], ...FORECAST_RAMP.flat()],
+        'circle-opacity': 0.85,
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-width': 2,
+      },
+    }, before);
+    map.addLayer({
+      id: 'forecast-bolt',
+      type: 'symbol',
+      source: 'forecast',
+      layout: {
+        visibility: 'none',
+        'icon-image': 'bolt',
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.4, 9, 0.6, 12, 0.8],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      },
+    }, before);
+
+    map.on('click', 'forecast', (e) => {
+      const p = e.features?.[0]?.properties;
+      if (!p) return;
+      clickedFeature = true;
+      const when = p.day === 1 ? 'завтра' : p.day === 2 ? 'послезавтра' : `через ${p.day} дня`;
+      new maplibregl.Popup({ closeButton: false, offset: 8 })
+        .setLngLat(e.lngLat)
+        .setHTML(`<b>Ожидается гроза</b> · ${when}<br><span class="popup-sub">${p.mm} мм осадков · прогноз, не измерение</span>`)
+        .addTo(map);
+    });
 
     map.addSource('strikes', { type: 'geojson', data: strikesGeoJson() });
     map.addLayer({
@@ -570,6 +629,8 @@ function syncLayers() {
   const showRain = state.rain && rainInfo().ok;
   for (const l of ['rain', 'rain-drop']) map.setLayoutProperty(l, 'visibility', showRain ? 'visible' : 'none');
   map.setLayoutProperty('strikes', 'visibility', state.strikes ? 'visible' : 'none');
+  const showForecast = state.forecasting && !!state.forecastCells?.length;
+  for (const l of ['forecast', 'forecast-bolt']) map.setLayoutProperty(l, 'visibility', showForecast ? 'visible' : 'none');
 }
 
 function drawHome() {
@@ -976,6 +1037,13 @@ function renderStatus() {
   box.classList.remove('stale', 'busy', 'ok');
   $('credit').textContent = CREDIT;
 
+  if (state.forecastLoading) {
+    box.classList.add('busy');
+    text.textContent = 'смотрю, где ожидаются грозы…';
+    btn.disabled = true;
+    return;
+  }
+
   if (state.loading) {
     box.classList.add('busy');
     text.textContent = state.loadingText || 'загружаю данные…';
@@ -1066,6 +1134,15 @@ function render() {
   $('pickBar').hidden = !state.picking;
   $('forecastBar').hidden = !state.forecasting;
   $('forecastBtn').setAttribute('aria-pressed', String(state.forecasting));
+  // Ответ «гроз не ожидается» — тоже ответ, и он должен висеть, а не мелькать.
+  if (state.forecasting) {
+    const n = state.forecastCells?.length;
+    $('forecastBarText').textContent = state.forecastLoading
+      ? 'Смотрю, где ожидаются грозы…'
+      : n
+        ? `Гроза ожидается в ${n} ${plural(n, ['месте', 'местах', 'местах'])} · нажмите на карту для прогноза в точке`
+        : 'Гроз над лесом в ближайшие 3 дня не ожидается · нажмите на карту для прогноза в точке';
+  }
   $('legend').hidden = state.picking || state.forecasting;
   $('settings').hidden = !state.settingsOpen;
   $('strikesBtn').setAttribute('aria-pressed', String(state.strikes));
@@ -1256,17 +1333,42 @@ function wire() {
     render();
   };
 
-  $('forecastBtn').onclick = () => {
+  $('forecastBtn').onclick = async () => {
     state.forecasting = !state.forecasting;
-    if (state.forecasting) {
-      state.picking = false;
-      state.sheet = 'collapsed';
-      state.selectedId = null;
+    if (!state.forecasting) { syncLayers(); render(); return; }
+
+    state.picking = false;
+    state.sheet = 'collapsed';
+    state.selectedId = null;
+    render();
+
+    // Прогноз спрашиваем только сейчас, по нажатию: пока кнопку не нажали,
+    // к службе погоды не уходит ни одного запроса.
+    if (!state.forecastCells) {
+      state.forecastLoading = true;
+      renderStatus();
+      try {
+        const r = await fetch('/api/forecast', { cache: 'no-store' });
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        state.forecastCells = j.cells || [];
+        state.forecastAt = j.madeAt;
+        if (mapReady) map.getSource('forecast').setData(forecastGeoJson());
+        showHint(state.forecastCells.length
+          ? `Гроза ожидается в ${state.forecastCells.length} ${plural(state.forecastCells.length, ['месте', 'местах', 'местах'])} над лесом`
+          : 'В ближайшие три дня гроз над лесом области не ожидается');
+      } catch (e) {
+        state.forecasting = false;
+        showHint(`Прогноз не получен: ${e.message}`);
+      } finally {
+        state.forecastLoading = false;
+      }
     }
+    syncLayers();
     render();
   };
 
-  $('cancelForecast').onclick = () => { state.forecasting = false; render(); };
+  $('cancelForecast').onclick = () => { state.forecasting = false; syncLayers(); render(); };
 
   // Во время сборки по плашке открывается окно с ходом работы и отменой.
   $('dateBadge').onclick = (e) => {

@@ -5,7 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { LIGHTNING_START, REGIONS_FILE, isCalendarDate, loadRegions, slugify } from './lib/config.mjs';
-import { earliestWeatherDate, localDate } from './lib/weather.mjs';
+import { earliestWeatherDate, fetchStormForecast, localDate } from './lib/weather.mjs';
+import { loadForestMask } from './lib/forestmask.mjs';
+
+/** Прогноз гроз по областям: {slug → {at, data}}. Живёт три часа. */
+const forecastCache = new Map();
 
 const ROOT = process.cwd();
 const PUBLIC = path.join(ROOT, 'public');
@@ -354,6 +358,40 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+  }
+
+  /**
+   * Где ожидаются грозы в ближайшие три дня. Спрашивается только по нажатию
+   * кнопки в приложении; ответ держим три часа, чтобы повторные нажатия не
+   * тратили лимит впустую.
+   */
+  if (pathname === '/api/forecast' && req.method === 'GET') {
+    try {
+      const region = activeRegion();
+      const cached = forecastCache.get(region.slug);
+      if (cached && Date.now() - cached.at < 3 * 3600_000) {
+        res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify(cached.data));
+        return;
+      }
+      // Прямоугольник считаем здесь, а не берём из настроек: после переключения
+      // области настройки, прочитанные при запуске сервера, уже не те.
+      const dLat = region.radiusKm / 111.32;
+      const dLon = region.radiusKm / (111.32 * Math.cos((region.lat * Math.PI) / 180));
+      const bbox = {
+        minLat: region.lat - dLat, maxLat: region.lat + dLat,
+        minLon: region.lon - dLon, maxLon: region.lon + dLon,
+      };
+      const inForest = await loadForestMask(path.join(regionDir(region.slug), 'forests.json'));
+      if (!inForest) throw new Error('слой лесов для этой области не собран');
+      const data = await fetchStormForecast(bbox, { keep: inForest });
+      const slug = region.slug;
+      forecastCache.set(slug, { at: Date.now(), data });
+      console.log(`[прогноз] ${slug}: ${data.cells.length} мест с грозой из ${data.points} точек леса`);
+      res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(502, { 'content-type': MIME['.json'] }).end(JSON.stringify({ error: e.message }));
+    }
+    return;
   }
 
   // Состояние для строки «данные загружены / обновляются»: страница спрашивает
