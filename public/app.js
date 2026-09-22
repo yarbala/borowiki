@@ -944,13 +944,19 @@ function render() {
   $('radiusLabel').textContent = `${$('radius').value} км`;
 
   const d = state.data;
+  const radius = d.dataRadiusKm || 200;
   const away = d?.home ? distKm(state.home, d.home.lat, d.home.lon) : 0;
-  const far = away > (d.dataRadiusKm || 200);
+  const far = away > radius;
   const note = $('regionNote');
   note.classList.toggle('warn', far);
+  // Раньше здесь стояло расстояние до центра области — и «в 235 км от области данных»
+  // читалось так, будто данных нет на сотни километров вокруг. На деле важно другое:
+  // насколько дом вышел за край.
   note.textContent = far
-    ? `Дом в ${Math.round(away)} км от области данных. Молнии и леса собраны только вокруг ${d.home.label} (${d.dataRadiusKm || 200} км). Чтобы перенести область сюда, выполните на компьютере: npm run region -- "${state.home.label}"`
-    : `Область данных: ${d.home.label} + ${d.dataRadiusKm || 200} км. Дом влияет на расстояния и список, но не расширяет её.`;
+    ? `Дом на ${Math.round(away - radius)} км за краем области данных — рядом с ним гроз и лесов не собрано. `
+      + `Данные есть в радиусе ${radius} км вокруг точки «${d.home.label}». `
+      + `Перенести область к дому: на компьютере выполните npm run region -- "${state.home.label}"`
+    : `Дом внутри области данных: «${d.home.label}» + ${radius} км. Радиус поиска ниже сужает список мест, но новых данных не добавляет.`;
 
   highlightSelected();
   renderStatus();

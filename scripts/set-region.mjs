@@ -54,6 +54,10 @@ async function main() {
 
   log(`новая область: ${home.label} (${home.lat}, ${home.lon}) + ${radiusKm} км`);
 
+  // Прежняя область нужна, чтобы подписать отложенные снимки истории.
+  let old = null;
+  try { old = JSON.parse(await fs.readFile(REGION_FILE, 'utf8')); } catch {}
+
   await fs.mkdir(path.dirname(REGION_FILE), { recursive: true });
   await fs.writeFile(REGION_FILE, JSON.stringify({ home, radiusKm }, null, 2));
 
@@ -72,6 +76,19 @@ async function main() {
     const stale = (await fs.readdir(cache)).filter((f) => /^rain-\d{4}-/.test(f));
     for (const f of stale) await fs.unlink(path.join(cache, f));
     if (stale.length) log(`кэш осадков прежнего региона очищен: ${stale.length} файлов`);
+  } catch {}
+
+  // Снимки истории собраны для прежней области: в новой они показывали бы
+  // грозы за сотни километров отсюда. Не удаляем — убираем из виду.
+  const history = path.join(ROOT, 'public', 'data', 'history');
+  try {
+    const snaps = (await fs.readdir(history)).filter((f) => f.endsWith('.json'));
+    if (snaps.length) {
+      const stash = path.join(ROOT, 'data', `history-${old?.home?.label || 'прежний регион'}`);
+      await fs.mkdir(stash, { recursive: true });
+      for (const f of snaps) await fs.rename(path.join(history, f), path.join(stash, f));
+      log(`снимков истории прежней области: ${snaps.length} — перенесены в ${path.relative(ROOT, stash)}`);
+    }
   } catch {}
 
   log('собираем леса региона…');
