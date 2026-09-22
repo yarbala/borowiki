@@ -96,18 +96,29 @@
         <button type="button" class="close-btn" id="closeHistory" title="Закрыть" aria-label="Закрыть">×</button>
       </div>
 
+      <!-- Готовые снимки открываются сразу, поэтому они первыми -->
+      <div class="field" id="historyListBox" hidden>
+        <span class="field-label">Готовые снимки — открываются сразу</span>
+        <div class="chips" id="historyList"></div>
+      </div>
+
       <div class="field">
-        <span class="field-label">Состояние на дату</span>
+        <span class="field-label">Собрать снимок на другую дату</span>
         <div class="search-row">
           <input type="date" id="historyDate">
-          <button type="button" class="linkbtn" id="showHistory">Показать</button>
+          <button type="button" class="linkbtn" id="showHistory">Собрать</button>
         </div>
         <div class="note" id="historyNote"></div>
       </div>
 
-      <div class="field" id="historyListBox" hidden>
-        <span class="field-label">Уже собрано</span>
-        <div class="chips" id="historyList"></div>
+      <!-- Ход сборки: без него семь минут выглядят как сломанное приложение -->
+      <div class="field" id="buildBox" hidden>
+        <div class="build-row">
+          <span class="spinner"></span>
+          <span class="build-text" id="buildText"></span>
+        </div>
+        <div class="build-sub" id="buildSub"></div>
+        <button type="button" class="linkbtn danger" id="cancelBuild">Отменить сборку</button>
       </div>
 
       <button type="button" class="primary" id="backToToday">Вернуться к сегодня</button>

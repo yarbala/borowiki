@@ -188,6 +188,35 @@ input[type=range] { accent-color: var(--accent); }
 .date-badge button:hover { background: rgba(255, 255, 255, .32); }
 .date-badge.building { background: var(--accent); }
 .date-badge.failed { background: var(--danger); }
+.date-badge.building span { max-width: 62vw; }
+
+/* Ход сборки снимка */
+.build-row { display: flex; align-items: center; gap: 9px; }
+.build-text { font-size: 14px; font-weight: 600; }
+.build-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-line;
+}
+
+.date-badge.building { cursor: pointer; }
+
+.spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--track);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.linkbtn.danger { color: var(--danger); margin-top: 10px; }
 
 .pick-bar {
   display: flex;

@@ -86,6 +86,9 @@ const state = {
   // {date, text} — сборка не удалась; без этого плашка просто исчезала.
   buildError: null,
   lastRun: null,
+  // Что сервер делает прямо сейчас и когда начал — чтобы показывать ход работы.
+  progress: null,
+  buildStartedAt: null,
 };
 
 function persist() {
@@ -143,6 +146,13 @@ function earliestDate() {
 const dateLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 /** Короткая — для плашки вверху, где мало места. */
 const dateShort = (d) => new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+
+/** Сколько уже идёт сборка — «2 минуты» вместо бесконечного многоточия. */
+function buildMinutes() {
+  if (!state.buildStartedAt) return 'меньше минуты';
+  const min = Math.floor((Date.now() - state.buildStartedAt) / 60_000);
+  return min < 1 ? 'меньше минуты' : `${min} ${plural(min, ['минуту', 'минуты', 'минут'])}`;
+}
 
 /** Короткое сообщение поверх карты: на телефоне подсказки-title не существует. */
 let hintTimer = null;
@@ -846,7 +856,7 @@ function render() {
   if (state.building) {
     badge.hidden = false;
     badge.classList.add('building');
-    $('dateBadgeText').textContent = `Собираем ${dateShort(state.building)}…`;
+    $('dateBadgeText').textContent = `Собираю ${dateShort(state.building)} · ${buildMinutes()}`;
   } else if (state.buildError) {
     badge.hidden = false;
     badge.classList.add('failed');
@@ -859,6 +869,14 @@ function render() {
     badge.hidden = true;
   }
   $('dateBadgeClose').hidden = !!state.building;
+
+  // Ход сборки — в окне истории: человеку нужно видеть, что работа идёт.
+  const building = !!state.building;
+  $('buildBox').hidden = !building;
+  if (building) {
+    $('buildText').textContent = `Собираю ${dateLabel(state.building)}`;
+    $('buildSub').textContent = `Сейчас: ${state.progress || 'запускаю'}\nидёт ${buildMinutes()}, обычно нужно около семи`;
+  }
 
   $('history').hidden = !state.historyOpen;
   $('historyBtn').setAttribute('aria-pressed', String(!!state.asOf));
@@ -961,6 +979,15 @@ function wire() {
     render();
   };
 
+  // Во время сборки по плашке открывается окно с ходом работы и отменой.
+  $('dateBadge').onclick = (e) => {
+    if (e.target.id === 'dateBadgeClose' || !state.building) return;
+    state.historyOpen = true;
+    state.settingsOpen = false;
+    refreshHistoryList();
+    render();
+  };
+
   $('dateBadgeClose').onclick = async () => {
     stopWatch();
     state.buildError = null;
@@ -985,10 +1012,32 @@ function wire() {
   $('closeHistory').onclick = () => { state.historyOpen = false; render(); };
   $('history').onclick = (e) => { if (e.target === $('history')) { state.historyOpen = false; render(); } };
 
+  $('cancelBuild').onclick = async () => {
+    stopWatch();
+    state.buildError = null;
+    $('historyNote').textContent = 'Сборка отменена. Карта показывает сегодняшний день.';
+    render();
+    try { await fetch('/api/history/cancel', { method: 'POST' }); } catch {}
+    refreshHistoryList();
+  };
+
   $('showHistory').onclick = async () => {
     const date = $('historyDate').value;
     if (!date) return;
     const note = $('historyNote');
+
+    // Снимок сегодняшнего дня — это и есть живые данные. Раньше такая дата
+    // запускала семиминутную сборку, после которой на экране ничего не менялось.
+    if (date >= isoDay(new Date())) {
+      stopWatch();
+      state.buildError = null;
+      await loadDataset(null);
+      state.historyOpen = false;
+      render();
+      fitHome();
+      return;
+    }
+
     try {
       const r = await fetch('/api/history', {
         method: 'POST',
@@ -1007,8 +1056,8 @@ function wire() {
         fitHome();
         return;
       }
-      state.historyOpen = false;
-      note.textContent = `Собираем ${dateLabel(date)} — около 7 минут.`;
+      // Окно оставляем открытым: здесь видно, что именно сейчас делается.
+      note.textContent = `Карта пока показывает сегодняшний день — снимок откроется сам, когда будет готов. Окно можно закрыть.`;
       watchBuild(date);
     } catch (e) {
       note.textContent = `Не получилось: ${e.message}`;
@@ -1095,6 +1144,8 @@ function watchBuild(date) {
       stopWatch();
       try {
         await loadDataset(date);
+        // Снимок готов — уводим окно с дороги, чтобы сразу была видна карта.
+        state.historyOpen = false;
         render();
         fitHome();
       } catch (e) {
@@ -1109,8 +1160,11 @@ function watchBuild(date) {
       state.buildError = { date, text: fail || `Снимок на ${dateLabel(date)} собрать не удалось.` };
       if (state.historyOpen) $('historyNote').textContent = state.buildError.text;
       render();
+    } else {
+      // Сборка идёт — перерисовываем, иначе ход работы застывает на «запускаю…».
+      render();
     }
-  }, 15000);
+  }, 5000);
 }
 
 async function refreshHistoryList() {
@@ -1120,6 +1174,8 @@ async function refreshHistoryList() {
     state.historyDates = j.dates || [];
     state.historyBusy = j.building || null;
     state.lastRun = j.lastRun || null;
+    state.progress = j.progress || null;
+    state.buildStartedAt = j.startedAt || null;
   } catch {}
   renderHistory();
 }
@@ -1127,8 +1183,11 @@ async function refreshHistoryList() {
 function renderHistory() {
   const box = $('historyList');
   box.textContent = '';
-  $('historyListBox').hidden = !state.historyDates.length;
-  for (const d of state.historyDates) {
+  // Снимок сегодняшнего дня не показываем: он не отличается от живых данных.
+  const today = isoDay(new Date());
+  const dates = state.historyDates.filter((d) => d < today);
+  $('historyListBox').hidden = !dates.length;
+  for (const d of dates) {
     const b = el('button', { type: 'button', textContent: new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) });
     b.setAttribute('aria-pressed', String(state.asOf === d));
     b.onclick = async () => {
@@ -1142,9 +1201,6 @@ function renderHistory() {
       }
     };
     box.append(b);
-  }
-  if (state.historyBusy) {
-    $('historyNote').textContent = `Собираем ${dateLabel(state.historyBusy)} — это около 7 минут. Можно закрыть окно, снимок появится сам.`;
   }
 }
 

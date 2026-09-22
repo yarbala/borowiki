@@ -63,8 +63,21 @@ const buildingDate = () => running?.date || null;
 function runUpdate(reason, args = [], date = null) {
   if (running) return false;
   console.log(`[update] старт (${reason})`);
-  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], { stdio: 'inherit' });
-  running = { child, date };
+  // Вывод перехватываем, чтобы показывать ход сборки в браузере: семь минут
+  // без единого признака работы выглядят как сломанное приложение.
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  running = { child, date, startedAt: Date.now(), progress: null };
+  let cancelled = false;
+  running.cancel = () => { cancelled = true; child.kill('SIGTERM'); };
+  const watch = (stream) => stream.on('data', (buf) => {
+    process.stdout.write(buf);
+    const line = buf.toString().split(/[\r\n]+/).filter(Boolean).pop();
+    if (line && running?.child === child) running.progress = line.replace(/^\[update\]\s*/, '').slice(0, 120);
+  });
+  watch(child.stdout);
+  watch(child.stderr);
   const done = (msg, error) => {
     if (running?.child === child) running = null;
     lastRun = { date, ok: !error, error: error || null, at: new Date().toISOString() };
@@ -72,7 +85,7 @@ function runUpdate(reason, args = [], date = null) {
   };
   child.on('exit', (code) => done(
     `завершено с кодом ${code}`,
-    code === 0 ? null : `сборка завершилась с ошибкой (код ${code}) — подробности в окне, где запущен сервер`,
+    code === 0 || cancelled ? null : `сборка завершилась с ошибкой (код ${code}) — подробности в окне, где запущен сервер`,
   ));
   child.on('error', (e) => done(`не запустилось: ${e.message}`, `не удалось запустить сборку: ${e.message}`));
   return true;
@@ -181,8 +194,13 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/api/history') {
     if (req.method === 'GET') {
-      res.writeHead(200, { 'content-type': MIME['.json'] })
-        .end(JSON.stringify({ dates: await historyDates(), building: buildingDate(), lastRun }));
+      res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({
+        dates: await historyDates(),
+        building: buildingDate(),
+        progress: running?.progress || null,
+        startedAt: running?.startedAt || null,
+        lastRun,
+      }));
       return;
     }
     if (req.method === 'POST') {
@@ -212,6 +230,15 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+  }
+
+  // Отмена сборки: снимок пишется через переименование, поэтому прерванная
+  // сборка не оставляет после себя ни обрезанного файла, ни следов.
+  if (pathname === '/api/history/cancel' && req.method === 'POST') {
+    const was = buildingDate();
+    if (running) running.cancel();
+    res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ cancelled: was }));
+    return;
   }
 
   if (pathname === '/api/update' && req.method === 'POST') {
