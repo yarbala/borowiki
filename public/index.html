@@ -36,6 +36,11 @@
         <button type="button" id="cancelPick">Отмена</button>
       </div>
 
+      <div class="pick-bar" id="forecastBar" hidden>
+        Нажмите на карту — покажу прогноз на 3 дня
+        <button type="button" id="cancelForecast">Готово</button>
+      </div>
+
       <div class="hint" id="hint" hidden></div>
 
       <!-- Шкалы подписаны: две одинаковые полоски без подписи ничего не объясняли -->
@@ -60,6 +65,9 @@
       </button>
       <button type="button" class="icon-btn" id="strikesBtn" title="Все разряды молний за 7 дней, включая поля" aria-pressed="false">
         <svg width="20" height="20"><polygon points="12.5,1.5 4,11.5 9.5,11.5 7.5,18.5 16,8.5 10.5,8.5" fill="currentColor"></polygon></svg>
+      </button>
+      <button type="button" class="icon-btn" id="forecastBtn" title="Прогноз на 3 дня для любой точки" aria-pressed="false">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14.5a3.5 3.5 0 0 1-.3-6.99A4.5 4.5 0 0 1 14.2 8.1 3.2 3.2 0 0 1 14 14.5z" fill="currentColor" fill-opacity=".15"/><line x1="7" y1="17.5" x2="6" y2="19"/><line x1="10.5" y1="17.5" x2="9.5" y2="19"/><line x1="14" y1="17.5" x2="13" y2="19"/></svg>
       </button>
       <button type="button" class="icon-btn" id="locateBtn" title="Моё местоположение">
         <svg width="20" height="20" class="ico-locate"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="2" class="dot"></circle><line x1="10" y1="1" x2="10" y2="3.5"></line><line x1="10" y1="16.5" x2="10" y2="19"></line><line x1="1" y1="10" x2="3.5" y2="10"></line><line x1="16.5" y1="10" x2="19" y2="10"></line></svg>

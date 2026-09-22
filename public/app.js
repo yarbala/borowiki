@@ -100,6 +100,8 @@ const state = {
   // Области данных: их может быть несколько, активная показана на карте.
   regions: [],
   addingSlug: null,
+  // Режим «прогноз по нажатию»: работает в любой точке, не только там, где была гроза.
+  forecasting: false,
 };
 
 function persist() {
@@ -509,7 +511,7 @@ function initMap() {
 
     // По ячейке осадков — всплывающая подсказка: сколько и когда.
     map.on('click', 'rain', (e) => {
-      if (state.picking) return;
+      if (state.picking || state.forecasting) return;
       const p = e.features?.[0]?.properties;
       if (!p) return;
       clickedFeature = true;
@@ -521,7 +523,7 @@ function initMap() {
 
     for (const layer of ['spot-halo', 'spot-bolt', 'storm-forests']) {
       map.on('click', layer, (e) => {
-        if (state.picking) return;
+        if (state.picking || state.forecasting) return;
         const f = e.features?.[0];
         const id = f?.properties?.id || f?.properties?.spotId;
         if (!id) return;
@@ -534,6 +536,8 @@ function initMap() {
 
     map.on('click', (e) => {
       if (state.picking) { setHome(e.lngLat.lat, e.lngLat.lng); return; }
+      // В режиме прогноза нажатие спрашивает погоду для этой точки, какой бы она ни была.
+      if (state.forecasting) { showPointForecast(e.lngLat.lat, e.lngLat.lng); return; }
       if (clickedFeature) { clickedFeature = false; return; }
       if (state.sheet !== 'collapsed') setSheet('collapsed', null);
     });
@@ -769,6 +773,67 @@ function renderChart(sp) {
 
 const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
+/** Значок дня: гроза, дождь или ясно. Один и тот же язык в карточке и в окошке. */
+function dayIcon(code, rainMm, size = 16) {
+  if (code >= 95) return boltSvg(size + 2, '#6B4EE6');
+  if (rainMm >= 1) return dropSvg(size, '#3E79C9');
+  return sunSvg(size, '#C9A227');
+}
+
+/**
+ * Прогноз для произвольной точки карты. Запрос идёт прямо из браузера в Open-Meteo:
+ * ключ не нужен, одна точка на три дня — это доли процента суточного лимита.
+ */
+async function showPointForecast(lat, lon) {
+  const box = el('div', { className: 'point-forecast' });
+  box.append(
+    el('div', { className: 'pf-head', textContent: 'Прогноз на 3 дня' }),
+    el('div', { className: 'pf-coords', textContent: `${lat.toFixed(3)}, ${lon.toFixed(3)}` }),
+    el('div', { className: 'pf-loading', textContent: 'спрашиваю погоду…' }),
+  );
+
+  const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', offset: 8 })
+    .setLngLat([lon, lat])
+    .setDOMContent(box)
+    .addTo(map);
+
+  try {
+    const url = 'https://api.open-meteo.com/v1/forecast'
+      + `?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`
+      + '&daily=weather_code,precipitation_sum,temperature_2m_max&timezone=auto&forecast_days=4';
+    const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) throw new Error(`служба погоды ответила ${r.status}`);
+    const d = (await r.json()).daily;
+    if (!d?.time?.length) throw new Error('для этой точки прогноза нет');
+
+    box.querySelector('.pf-loading').remove();
+    const days = el('div', { className: 'pf-days' });
+    // Нулевой день — сегодняшний, он уже наполовину прошёл; показываем следующие три.
+    for (let i = 1; i < Math.min(4, d.time.length); i++) {
+      const date = new Date(`${d.time[i]}T12:00:00`);
+      const code = d.weather_code[i] ?? 0;
+      const mm = Math.round((d.precipitation_sum[i] ?? 0) * 10) / 10;
+      days.append(el('div', { className: `pf-day${code >= 95 ? ' storm' : ''}` },
+        el('span', { className: 'pf-date', textContent: `${WEEKDAYS[date.getDay()]} ${date.getDate()}` }),
+        el('span', { className: 'pf-icon' }, dayIcon(code, mm)),
+        el('span', { className: 'pf-mm', textContent: mm > 0 ? `${mm} мм` : 'сухо' }),
+        el('span', { className: 'pf-t', textContent: `${Math.round(d.temperature_2m_max[i] ?? 0)}°` })));
+    }
+    box.append(days);
+
+    const stormDay = d.time.findIndex((t, i) => i > 0 && i < 4 && (d.weather_code[i] ?? 0) >= 95);
+    box.append(el('div', {
+      className: 'pf-note',
+      textContent: stormDay > 0
+        ? 'Гроза ожидается — если случится, ехать через 2–4 дня после неё.'
+        : 'Гроз не ожидается. Прогноз погоды, не молний.',
+    }));
+  } catch (e) {
+    const load = box.querySelector('.pf-loading');
+    if (load) load.textContent = `не получилось: ${e.message}`;
+  }
+}
+
 /**
  * Прогноз на три дня вперёд. Это единственное место в приложении, где показано
  * не измеренное, — поэтому оно отделено чертой и подписано «ожидается».
@@ -999,7 +1064,9 @@ function render() {
   $('history').hidden = !state.historyOpen;
   $('historyBtn').setAttribute('aria-pressed', String(!!state.asOf));
   $('pickBar').hidden = !state.picking;
-  $('legend').hidden = state.picking;
+  $('forecastBar').hidden = !state.forecasting;
+  $('forecastBtn').setAttribute('aria-pressed', String(state.forecasting));
+  $('legend').hidden = state.picking || state.forecasting;
   $('settings').hidden = !state.settingsOpen;
   $('strikesBtn').setAttribute('aria-pressed', String(state.strikes));
   // Кнопку не отключаем: на телефоне у недоступной кнопки не прочитать подсказку,
@@ -1188,6 +1255,18 @@ function wire() {
     syncLayers();
     render();
   };
+
+  $('forecastBtn').onclick = () => {
+    state.forecasting = !state.forecasting;
+    if (state.forecasting) {
+      state.picking = false;
+      state.sheet = 'collapsed';
+      state.selectedId = null;
+    }
+    render();
+  };
+
+  $('cancelForecast').onclick = () => { state.forecasting = false; render(); };
 
   // Во время сборки по плашке открывается окно с ходом работы и отменой.
   $('dateBadge').onclick = (e) => {
