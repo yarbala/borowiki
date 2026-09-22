@@ -1,0 +1,6 @@
+{
+  "active": "wroclaw",
+  "regions": [
+    { "slug": "wroclaw", "label": "Вроцлав", "lat": 51.1079, "lon": 17.0385, "radiusKm": 200 }
+  ]
+}

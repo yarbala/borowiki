@@ -9,7 +9,7 @@
     "update": "node scripts/update.mjs",
     "update:demo": "node scripts/update.mjs --demo",
     "forests": "node scripts/build-forests.mjs",
-    "region": "node scripts/set-region.mjs"
+    "region": "node scripts/collect-region.mjs"
   },
   "engines": {
     "node": ">=20"

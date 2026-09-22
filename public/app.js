@@ -94,6 +94,12 @@ const state = {
   loadingText: 'загружаю данные…',
   updating: false,
   serverProgress: null,
+  // Что именно делает сервер: обычное обновление или сбор новой области.
+  kind: null,
+  moving: false,
+  // Области данных: их может быть несколько, активная показана на карте.
+  regions: [],
+  addingSlug: null,
 };
 
 function persist() {
@@ -852,7 +858,9 @@ function renderStatus() {
 
   if (state.updating || state.building) {
     box.classList.add('busy');
-    const what = state.building ? `собираю ${dateShort(state.building)}` : 'обновляю данные';
+    const what = state.building
+      ? `собираю ${dateShort(state.building)}`
+      : state.kind === 'region' ? 'переношу область данных' : 'обновляю данные';
     text.textContent = state.serverProgress ? `${what} · ${state.serverProgress}` : `${what}…`;
     btn.disabled = true;
     btn.classList.add('spinning');
@@ -954,12 +962,98 @@ function render() {
   // насколько дом вышел за край.
   note.textContent = far
     ? `Дом на ${Math.round(away - radius)} км за краем области данных — рядом с ним гроз и лесов не собрано. `
-      + `Данные есть в радиусе ${radius} км вокруг точки «${d.home.label}». `
-      + `Перенести область к дому: на компьютере выполните npm run region -- "${state.home.label}"`
+      + `Сейчас данные есть в радиусе ${radius} км вокруг точки «${d.home.label}».`
     : `Дом внутри области данных: «${d.home.label}» + ${radius} км. Радиус поиска ниже сужает список мест, но новых данных не добавляет.`;
+
+  renderRegions(far, radius);
 
   highlightSelected();
   renderStatus();
+}
+
+/**
+ * Список областей данных. Области лежат рядом и не мешают друг другу:
+ * добавление новой ничего не стирает, переключение занимает секунду.
+ */
+function renderRegions(homeOutside, radius) {
+  const box = $('regionList');
+  box.textContent = '';
+
+  for (const r of state.regions) {
+    const row = el('button', { type: 'button', className: 'region-row' });
+    row.setAttribute('aria-pressed', String(!!r.active));
+
+    const sub = r.ready
+      ? `${r.spots} ${plural(r.spots, ['место', 'места', 'мест'])} · радиус ${r.radiusKm} км`
+      : state.addingSlug === r.slug ? 'собираю…' : 'данные ещё не собраны';
+
+    row.append(el('span', { className: 'col' },
+      el('span', { className: 'name', textContent: r.label }),
+      el('span', { className: 'sub', textContent: sub })));
+
+    if (r.active) row.append(el('span', { className: 'mark', textContent: 'показана' }));
+    row.onclick = () => switchRegion(r);
+
+    // Лишнюю область можно убрать — данные при этом не стираются, а откладываются.
+    if (!r.active && state.regions.length > 1) {
+      const drop = el('span', { className: 'drop', textContent: '×', title: 'Убрать область из списка' });
+      drop.onclick = (e) => { e.stopPropagation(); removeRegion(r); };
+      row.append(drop);
+    }
+    box.append(row);
+  }
+
+  // Добавлять предлагаем только когда дом не покрыт ни одной собранной областью.
+  const covered = state.regions.some((r) => distKm(state.home, r.lat, r.lon) <= r.radiusKm);
+  const btn = $('addRegion');
+  btn.hidden = covered || state.updating || !!state.building;
+  btn.textContent = `Добавить область вокруг «${state.home.label}» (${radius} км)`;
+  $('regionHint').textContent = homeOutside && !covered
+    ? 'Добавление не тронет уже собранные области — новая ляжет рядом, и между ними можно будет переключаться.'
+    : 'Областей может быть несколько. Переключение между собранными — мгновенное.';
+}
+
+async function switchRegion(r) {
+  if (r.active) return;
+  if (!r.ready) { showHint(`Область «${r.label}» ещё не собрана`); return; }
+  try {
+    const res = await fetch('/api/regions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'switch', slug: r.slug }),
+    });
+    const j = await res.json();
+    if (j.error) { showHint(j.error); return; }
+    // Меняются и грозы, и леса, и центр карты — перечитываем страницу целиком.
+    location.reload();
+  } catch (e) {
+    showHint(`Не переключилось: ${e.message}`);
+  }
+}
+
+async function removeRegion(r) {
+  try {
+    const res = await fetch('/api/regions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'remove', slug: r.slug }),
+    });
+    const j = await res.json();
+    if (j.error) { showHint(j.error); return; }
+    showHint(`Область «${r.label}» убрана из списка. Данные сохранены в data/removed`);
+    await refreshRegions();
+    render();
+  } catch (e) {
+    showHint(`Не получилось: ${e.message}`);
+  }
+}
+
+async function refreshRegions() {
+  try {
+    const r = await fetch('/api/regions', { cache: 'no-store' });
+    const j = await r.json();
+    state.regions = j.regions || [];
+  } catch {}
 }
 
 // ---------- события ----------
@@ -1131,6 +1225,36 @@ function wire() {
     }
   };
 
+  $('addRegion').onclick = async () => {
+    const radius = state.data.dataRadiusKm || 200;
+    const hint = $('regionHint');
+    hint.textContent = 'Начинаю собирать новую область…';
+    try {
+      const r = await fetch('/api/regions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'add',
+          lat: state.home.lat,
+          lon: state.home.lon,
+          label: state.home.label,
+          radiusKm: radius,
+        }),
+      });
+      const j = await r.json();
+      if (j.error) { hint.textContent = j.error; return; }
+      state.updating = true;
+      state.addingSlug = j.adding.slug;
+      state.settingsOpen = false;
+      showHint(`Собираю область «${j.adding.label}» — 10–15 минут. Нынешняя область работает как обычно.`);
+      await refreshRegions();
+      render();
+      document.dispatchEvent(new Event('borowiki:poll'));
+    } catch (e) {
+      hint.textContent = `Не получилось: ${e.message}`;
+    }
+  };
+
   $('refreshBtn').onclick = async () => {
     state.updating = true;
     state.serverProgress = null;
@@ -1247,8 +1371,34 @@ function startStatusPoll() {
       const r = await fetch('/api/status', { cache: 'no-store' });
       const j = await r.json();
       const wasUpdating = state.updating;
+      const wasMoving = state.moving;
       state.updating = !!j.updating;
       state.serverProgress = j.progress || null;
+      state.kind = j.kind || null;
+      state.moving = j.kind === 'region' && !!j.updating;
+
+      // Новая область дособлась. Если удачно — переключаемся на неё и перечитываем
+      // страницу: меняются и грозы, и леса, и центр карты. Если нет — говорим почему,
+      // а прежняя область продолжает работать как ни в чём не бывало.
+      if (wasMoving && !state.moving) {
+        const slug = state.addingSlug;
+        state.addingSlug = null;
+        await refreshRegions();
+        if (j.lastRun && j.lastRun.ok === false) {
+          showHint(`Собрать область не удалось: ${j.lastRun.error}`);
+          render();
+        } else if (slug) {
+          await fetch('/api/regions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'switch', slug }),
+          }).catch(() => {});
+          location.reload();
+          return;
+        } else {
+          render();
+        }
+      }
 
       // Сборку могли запустить с телефона или из другой вкладки — показываем и её.
       if (j.building && !state.buildPoll) watchBuild(j.building);
@@ -1358,6 +1508,8 @@ async function boot() {
   $('homeLabel').value = state.home.label;
   $('historyDate').min = earliestDate();
   $('historyDate').max = isoDay(new Date());
+
+  await refreshRegions();
 
   state.loadingText = 'рисую карту…';
   initMap();

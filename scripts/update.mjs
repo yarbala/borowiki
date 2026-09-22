@@ -6,7 +6,7 @@
 //   node scripts/update.mjs --date=2026-09-07   состояние на тот день (в public/data/history/)
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { BBOX, DATA_RADIUS_KM, DAYS, HOME, LIGHTNING_START, TZ, isCalendarDate } from '../lib/config.mjs';
+import { BBOX, DATA_RADIUS_KM, DAYS, HOME, LIGHTNING_START, REGION, REGION_DATA_DIR, TZ, isCalendarDate } from '../lib/config.mjs';
 import { loadFrames, pruneFrames } from '../lib/lightning.mjs';
 import { buildPasses } from '../lib/storms.mjs';
 import { buildSpots } from '../lib/spots.mjs';
@@ -14,7 +14,7 @@ import { MAX_PAST_DAYS, analyse, earliestWeatherDate, fetchDaily, fetchRainGrid,
 import { loadForestMask } from '../lib/forestmask.mjs';
 import { agoText } from '../lib/format.mjs';
 
-const DATA_DIR = path.join(process.cwd(), 'public', 'data');
+const DATA_DIR = REGION_DATA_DIR;
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -246,6 +246,7 @@ async function main() {
     asOf: asOf || null,
     demoLabel: demo !== null ? `${local(from.getTime()).dayLabel} – ${local(now.getTime()).dayLabel}` : null,
     home: { lat: HOME.lat, lon: HOME.lon, label: HOME.label },
+    region: REGION.slug,
     dataRadiusKm: DATA_RADIUS_KM,
     forests,
     spots: ready,

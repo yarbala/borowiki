@@ -4,14 +4,33 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { LIGHTNING_START, isCalendarDate } from './lib/config.mjs';
+import { LIGHTNING_START, REGIONS_FILE, isCalendarDate, loadRegions, slugify } from './lib/config.mjs';
 import { earliestWeatherDate, localDate } from './lib/weather.mjs';
 
 const ROOT = process.cwd();
 const PUBLIC = path.join(ROOT, 'public');
 const FINDS = path.join(ROOT, 'data', 'finds.json');
-const HISTORY = path.join(PUBLIC, 'data', 'history');
 const PORT = +(process.env.PORT || 8080);
+
+/**
+ * Областей может быть несколько, и данные у каждой свои. Какая активна — решает
+ * файл data/regions.json; сервер перечитывает его при каждом обращении, чтобы
+ * переключение в настройках срабатывало сразу.
+ */
+const regionsState = () => loadRegions();
+const activeRegion = () => {
+  const { active, regions } = regionsState();
+  return regions.find((r) => r.slug === active) || regions[0];
+};
+const regionDir = (slug) => path.join(PUBLIC, 'data', 'regions', slug);
+const historyDir = () => path.join(regionDir(activeRegion().slug), 'history');
+
+async function saveRegions(state) {
+  await fs.mkdir(path.dirname(REGIONS_FILE), { recursive: true });
+  const tmp = `${REGIONS_FILE}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(state, null, 2));
+  await fs.rename(tmp, REGIONS_FILE);
+}
 
 /** Как часто проверять, не пора ли обновить данные. */
 const CHECK_MS = 15 * 60_000;
@@ -60,15 +79,15 @@ let lastRun = null;
 
 const buildingDate = () => running?.date || null;
 
-function runUpdate(reason, args = [], date = null) {
+function runUpdate(reason, args = [], date = null, script = 'update.mjs', kind = 'update') {
   if (running) return false;
   console.log(`[update] старт (${reason})`);
   // Вывод перехватываем, чтобы показывать ход сборки в браузере: семь минут
   // без единого признака работы выглядят как сломанное приложение.
-  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'update.mjs'), ...args], {
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', script), ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  running = { child, date, startedAt: Date.now(), progress: null };
+  running = { child, date, kind, startedAt: Date.now(), progress: null };
   let cancelled = false;
   running.cancel = () => { cancelled = true; child.kill('SIGTERM'); };
   const watch = (stream) => stream.on('data', (buf) => {
@@ -103,7 +122,7 @@ function checkHistoryDate(date) {
 
 async function historyDates() {
   try {
-    return (await fs.readdir(HISTORY))
+    return (await fs.readdir(historyDir()))
       .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
       .map((f) => f.slice(0, 10))
       .sort()
@@ -120,7 +139,7 @@ async function historyDates() {
 let dataInfo = { mtimeMs: 0, generatedAt: null, spots: 0 };
 
 async function currentData() {
-  const file = path.join(PUBLIC, 'data', 'spots.json');
+  const file = path.join(regionDir(activeRegion().slug), 'spots.json');
   try {
     const st = await fs.stat(file);
     if (st.mtimeMs !== dataInfo.mtimeMs) {
@@ -135,7 +154,7 @@ async function currentData() {
 
 async function dataAgeMs() {
   try {
-    const raw = JSON.parse(await fs.readFile(path.join(PUBLIC, 'data', 'spots.json'), 'utf8'));
+    const raw = JSON.parse(await fs.readFile(path.join(regionDir(activeRegion().slug), 'spots.json'), 'utf8'));
     if (raw.demo) return 0; // демо-данные не устаревают
     return Date.now() - new Date(raw.generatedAt).getTime();
   } catch {
@@ -151,7 +170,12 @@ async function maybeUpdate(reason) {
 // ---------- HTTP ----------
 
 async function serveStatic(req, res, urlPath) {
-  const rel = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath).replace(/^\/+/, '');
+  let rel = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath).replace(/^\/+/, '');
+  // Страница просит просто data/spots.json — отдаём файл выбранной области.
+  // Так переключение области не требует от страницы знать её имя.
+  if (rel.startsWith('data/') && !rel.startsWith('data/regions/')) {
+    rel = `data/regions/${activeRegion().slug}/${rel.slice('data/'.length)}`;
+  }
   const file = path.join(PUBLIC, rel);
   if (!file.startsWith(PUBLIC)) {
     res.writeHead(403).end('403');
@@ -252,6 +276,86 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  /**
+   * Список областей: показать, переключиться, добавить новую, удалить лишнюю.
+   * Области лежат рядом и не мешают друг другу — добавление Кракова не трогает
+   * вроцлавские данные.
+   */
+  if (pathname === '/api/regions') {
+    if (req.method === 'GET') {
+      const { active, regions } = regionsState();
+      const list = await Promise.all(regions.map(async (r) => {
+        let ready = false, generatedAt = null, spots = 0;
+        try {
+          const raw = JSON.parse(await fs.readFile(path.join(regionDir(r.slug), 'spots.json'), 'utf8'));
+          ready = true;
+          generatedAt = raw.generatedAt;
+          spots = raw.spots?.length || 0;
+        } catch {}
+        return { ...r, ready, generatedAt, spots, active: r.slug === active };
+      }));
+      res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ active, regions: list }));
+      return;
+    }
+
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', async () => {
+        try {
+          const { action, slug, lat, lon, label, radiusKm } = JSON.parse(body || '{}');
+          const state = regionsState();
+
+          if (action === 'switch') {
+            if (!state.regions.some((r) => r.slug === slug)) throw new Error('такой области нет');
+            await saveRegions({ ...state, active: slug });
+            res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ active: slug }));
+            return;
+          }
+
+          if (action === 'remove') {
+            if (state.regions.length < 2) throw new Error('это единственная область — удалять нечего');
+            const rest = state.regions.filter((r) => r.slug !== slug);
+            if (rest.length === state.regions.length) throw new Error('такой области нет');
+            if (running) throw new Error('дождитесь окончания сборки');
+            await saveRegions({ active: state.active === slug ? rest[0].slug : state.active, regions: rest });
+            // Данные убираем в сторону, а не стираем: вернуть дешевле, чем собрать заново.
+            const stash = path.join(ROOT, 'data', 'removed', `${slug}-${Date.now()}`);
+            await fs.mkdir(path.dirname(stash), { recursive: true });
+            await fs.rename(regionDir(slug), stash).catch(() => {});
+            res.writeHead(200, { 'content-type': MIME['.json'] }).end(JSON.stringify({ removed: slug, stash }));
+            return;
+          }
+
+          if (action === 'add') {
+            if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85 || Math.abs(lon) > 180) {
+              throw new Error('нужны координаты новой области');
+            }
+            const r = Math.round(Number(radiusKm) || 200);
+            if (r < 50 || r > 300) throw new Error('радиус области — от 50 до 300 км');
+            if (running) throw new Error('сейчас идёт другая сборка, попробуйте через минуту');
+
+            const name = String(label || '').trim().slice(0, 60) || `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+            const newSlug = slugify(name, lat, lon);
+            if (state.regions.some((x) => x.slug === newSlug)) throw new Error(`область «${name}» уже есть в списке`);
+
+            const region = { slug: newSlug, label: name, lat: +lat.toFixed(4), lon: +lon.toFixed(4), radiusKm: r };
+            // Записываем сразу, но активной не делаем: пока данных нет, показывать нечего.
+            await saveRegions({ active: state.active, regions: [...state.regions, region] });
+            runUpdate(`сбор области ${name}`, [newSlug], null, 'collect-region.mjs', 'region');
+            res.writeHead(202, { 'content-type': MIME['.json'] }).end(JSON.stringify({ adding: region }));
+            return;
+          }
+
+          throw new Error('неизвестное действие');
+        } catch (e) {
+          res.writeHead(400, { 'content-type': MIME['.json'] }).end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+  }
+
   // Состояние для строки «данные загружены / обновляются»: страница спрашивает
   // раз в полминуты и сама подхватывает свежие данные, когда сервер их пересобрал.
   if (pathname === '/api/status' && req.method === 'GET') {
@@ -260,6 +364,7 @@ const server = http.createServer(async (req, res) => {
       generatedAt: info.generatedAt,
       spots: info.spots,
       updating: !!running && !buildingDate(),
+      kind: running?.kind || null,
       building: buildingDate(),
       progress: running?.progress || null,
       startedAt: running?.startedAt || null,

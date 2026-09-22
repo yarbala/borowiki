@@ -7,12 +7,12 @@
 // Запуск: npm run forests   (нужен один раз, файл потом не меняется)
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { BBOX } from '../lib/config.mjs';
+import { BBOX, REGION, REGION_DATA_DIR } from '../lib/config.mjs';
 import { ZOOM, tileData } from '../lib/forest.mjs';
 import { lonLatToTile } from '../lib/mvt.mjs';
 import { ringAreaKm2, simplifyRing } from '../lib/geo.mjs';
 
-const OUT = path.join(process.cwd(), 'public', 'data', 'forests.json');
+const OUT = path.join(REGION_DATA_DIR, 'forests.json');
 
 /** На обзоре массивы мельче этого — меньше пикселя; вблизи их рисует подложка. */
 const MIN_AREA_KM2 = 0.4;
