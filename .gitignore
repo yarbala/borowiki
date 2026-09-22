@@ -5,9 +5,14 @@
 node_modules/
 
 # Кэш загруженных данных: кадры молний, векторные тайлы, ответы погоды
-data/frames/
+data/regions/*/frames/
 data/tiles/
 data/cache/
+# Убранные из списка области — лежат до тех пор, пока не понадобятся
+data/removed/
 
 # Результат сборки — создаётся запуском npm run update
-public/data/spots.json
+public/data/regions/*/spots.json
+
+# Снимки истории остаются в репозитории намеренно: каждый стоит семи минут
+# сборки и части суточного лимита Open-Meteo.
